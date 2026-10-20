@@ -13,9 +13,9 @@
   ],
   "platforms": {
     "win32-x64": {
-      "url": "https://pub-ec47b1fa4cbf4c5ba82408a738fb69d3.r2.dev/QuickPill-Windows-v5.5.2-Setup.exe",
-      "sha256": "14acfabffd3ddb68d78583f18685c5038bbe67355eabcc284d7760c2cd15548d",
-      "size": 135151289,
+      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.2/QuickPill-Windows-v5.5.2-Setup.exe",
+      "sha256": "475057b71144e409af191d7b38e74b85fa972d62d420ca46eeb555cc1f8c8e10",
+      "size": 135781944,
       "installerType": "nsis"
     }
   }
