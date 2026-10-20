@@ -2180,14 +2180,17 @@ class AppUpdater extends EventEmitter {
     const filePath = this.downloadedFilePath;
 
     try {
-      // In Windows, launching the setup executable after releasing locks:
-      // Use cmd.exe /c start to spawn independent detached installer process,
-      // giving current electron app time to close and free file handles.
-      const cmd = `timeout /t 1 /nobreak >nul && start "" "${filePath}"`;
-      spawn("cmd.exe", ["/c", cmd], {
+      // In Windows, spawn installer detached without depending on cmd timeout piping
+      spawn("powershell.exe", [
+        "-NoProfile",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        `Start-Sleep -Seconds 1; Start-Process -FilePath '${filePath.replace(/'/g, "''")}'`
+      ], {
         detached: true,
         stdio: "ignore",
-        windowsHide: false,
+        windowsHide: true,
       }).unref();
 
       setTimeout(() => {
