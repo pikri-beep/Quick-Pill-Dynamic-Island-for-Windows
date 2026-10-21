@@ -2304,7 +2304,9 @@ export default function Island() {
     }
   });
   const [isDragOverShelf, setIsDragOverShelf] = useState(false);
-  const isOutboundDragging = useRef(false);
+  const isOutboundDragRef = useRef(false);
+  const isOutboundDragging = isOutboundDragRef; // Alias for backward compatibility
+  const [isJarvisLoading, setIsJarvisLoading] = useState(false);
 
   const clearShelf = useCallback(() => {
     setShelfFiles([]);
@@ -2702,7 +2704,7 @@ export default function Island() {
   // Auto-Expand Notch on Dragging Files Near Top Screen & webUtils Path Resolution
   useEffect(() => {
     const handleDragEnter = (e) => {
-      if (isOutboundDragging.current) return;
+      if (isOutboundDragRef.current) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
@@ -2711,7 +2713,7 @@ export default function Island() {
     };
 
     const handleDragOver = (e) => {
-      if (isOutboundDragging.current) return;
+      if (isOutboundDragRef.current) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
@@ -2734,7 +2736,12 @@ export default function Island() {
     const handleDrop = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      isOutboundDragging.current = false;
+      if (isOutboundDragRef.current) {
+        isOutboundDragRef.current = false;
+        setIsDragOverShelf(false);
+        return;
+      }
+      isOutboundDragRef.current = false;
       setIsDragOverShelf(false);
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         const newFiles = Array.from(e.dataTransfer.files).map(f => {
@@ -2755,7 +2762,11 @@ export default function Island() {
         });
 
         setShelfFiles(prev => {
-          const updated = [...newFiles, ...prev];
+          // Deduplicate by file path: if existingFiles has the same path, do not add a duplicate copy
+          const existingPaths = new Set(prev.map(f => f.path).filter(Boolean));
+          const uniqueNewFiles = newFiles.filter(f => !f.path || !existingPaths.has(f.path));
+          if (uniqueNewFiles.length === 0) return prev;
+          const updated = [...uniqueNewFiles, ...prev];
           localStorage.setItem("shelf-files", JSON.stringify(updated.slice(0, 20)));
           return updated.slice(0, 20);
         });
@@ -2763,7 +2774,7 @@ export default function Island() {
     };
 
     const resetDragState = () => {
-      isOutboundDragging.current = false;
+      isOutboundDragRef.current = false;
       setIsDragOverShelf(false);
     };
 
@@ -4301,17 +4312,20 @@ export default function Island() {
     return () => clearInterval(interval);
   }, [mode, currentTab]);
 
-  // Key Lock Alert Listener (NumLock only, CapsLock completely disabled)
+  // Key Lock Alert Listener (NumLock & CapsLock - suppressed when notch is expanded)
   useEffect(() => {
     if (!window.electronAPI?.onKeyLockChange) return;
     const cleanup = window.electronAPI.onKeyLockChange((data) => {
-      if (!data || data.key === 'CapsLock') return;
+      if (!data) return;
+      // If expanded in large mode, do not disrupt user typing with full-card Caps Lock overlay
+      if (mode === 'large') return;
       setKeyLockAlert(data);
+      const isCaps = data.key === 'CapsLock';
       triggerHudToast({
         type: 'caps',
-        title: 'Num Lock',
+        title: isCaps ? 'Caps Lock' : 'Num Lock',
         state: data.state ? 'On' : 'Off',
-        icon: '#'
+        icon: isCaps ? 'A' : '#'
       });
       clearTimeout(keyLockAlertTimeout.current);
       keyLockAlertTimeout.current = setTimeout(() => {
@@ -4322,7 +4336,7 @@ export default function Island() {
       cleanup?.();
       clearTimeout(keyLockAlertTimeout.current);
     };
-  }, [triggerHudToast]);
+  }, [mode, triggerHudToast]);
 
   // USB Device Alert Listener (push events from main process)
   useEffect(() => {
@@ -5088,8 +5102,14 @@ export default function Island() {
         mouseLeaveTimer.current = setTimeout(() => {
           mouseLeaveTimer.current = null;
 
-          const activeTag = document.activeElement?.tagName;
-          if (activeTag === "INPUT" || activeTag === "TEXTAREA" || isDragOverShelf) return;
+          const activeEl = document.activeElement;
+          const activeTag = activeEl?.tagName;
+          const isInputFocused = (activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT");
+          const islandEl = document.getElementById("Island");
+          const isFocusInsideNotch = islandEl && activeEl && islandEl.contains(activeEl);
+
+          // Keep notch expanded while JARVIS is responding, an input/textarea inside notch is focused, or shelf is active
+          if (isJarvisLoading || (isInputFocused && isFocusInsideNotch) || isDragOverShelf) return;
 
           setHoverState(false);
           updateMouseIgnore(true, true);
@@ -6400,18 +6420,23 @@ export default function Island() {
                                       e.preventDefault();
                                     }
                                   } catch (_) {}
-                                  isOutboundDragging.current = true;
+                                  isOutboundDragRef.current = true;
                                   setIsDragOverShelf(false);
                                   if (file.path && window.electronAPI?.startDrag) {
                                     window.electronAPI.startDrag(file.path);
                                   }
-                                  setTimeout(() => {
-                                    isOutboundDragging.current = false;
+                                  const resetOutbound = () => {
+                                    isOutboundDragRef.current = false;
                                     setIsDragOverShelf(false);
-                                  }, 300);
+                                    window.removeEventListener('dragend', resetOutbound);
+                                    window.removeEventListener('mouseup', resetOutbound);
+                                  };
+                                  window.addEventListener('dragend', resetOutbound);
+                                  window.addEventListener('mouseup', resetOutbound);
+                                  setTimeout(resetOutbound, 500);
                                 }}
                                 onDragEnd={() => {
-                                  isOutboundDragging.current = false;
+                                  isOutboundDragRef.current = false;
                                   setIsDragOverShelf(false);
                                 }}
                                 onClick={() => {
@@ -6667,6 +6692,7 @@ export default function Island() {
                       {/* Bottom Pinned Input Bar (34px, 8px margin-top) */}
                       <div style={{ display: 'flex', gap: 8, height: 34, marginTop: 8, flexShrink: 0 }}>
                         <input
+                          autoFocus
                           placeholder="New task..."
                           value={taskText}
                           onChange={(e) => setTaskText(e.target.value)}
@@ -6816,6 +6842,7 @@ export default function Island() {
                     <AskAI
                       textColor={textColor}
                       accentColor="#a855f7"
+                      onLoadingChange={setIsJarvisLoading}
                       onClose={() => setMode("still")}
                     />
                   </ErrorBoundary>

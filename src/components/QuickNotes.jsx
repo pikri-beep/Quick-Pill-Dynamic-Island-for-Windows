@@ -101,6 +101,16 @@ export default function QuickNotes({
     }
   }, [showStatus]);
 
+  // Auto-focus composer textarea on mount
+  useEffect(() => {
+    if (viewMode === "composer") {
+      const timer = setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 60);
+      return () => clearTimeout(timer);
+    }
+  }, [viewMode]);
+
   useEffect(() => {
     loadNotes();
   }, [loadNotes]);

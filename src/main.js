@@ -3367,8 +3367,9 @@ $MediaKey::keybd_event(${vkCode}, 0, 2, [UIntPtr]::Zero)
   return false;
 });
 
-// --- Feature: Key Lock Alerts (NumLock) ---
+// --- Feature: Key Lock Alerts (NumLock & CapsLock) ---
 let lastNumLock = null;
+let lastCapsLock = null;
 
 function startKeyLockPolling() {
   if (process.platform !== "win32") return;
@@ -3381,6 +3382,12 @@ function startKeyLockPolling() {
           mainWindow.webContents.send("key-lock-change", { key: "NumLock", state: num });
         }
         lastNumLock = num;
+
+        const caps = (user32Lib.GetKeyState(0x14) & 1) !== 0;
+        if (lastCapsLock !== null && caps !== lastCapsLock) {
+          mainWindow.webContents.send("key-lock-change", { key: "CapsLock", state: caps });
+        }
+        lastCapsLock = caps;
       }
     } catch (_) {}
   }, 150);

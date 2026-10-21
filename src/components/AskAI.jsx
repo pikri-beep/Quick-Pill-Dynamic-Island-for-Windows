@@ -12,7 +12,8 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 export default function AskAI({
   textColor = "#ffffff",
   accentColor = "#a855f7",
-  onClose
+  onClose,
+  onLoadingChange
 }) {
   const [prompt, setPrompt] = useState("");
   const [lastPrompt, setLastPrompt] = useState("");
@@ -22,6 +23,11 @@ export default function AskAI({
   const [isLaunching, setIsLaunching] = useState(false);
 
   const inputRef = useRef(null);
+
+  // Notify parent of loading state for keep-open lock
+  useEffect(() => {
+    onLoadingChange?.(status === "loading");
+  }, [status, onLoadingChange]);
 
   // Auto-focus input on mount and when returning to idle
   useEffect(() => {
