@@ -1,21 +1,21 @@
 {
-  "version": "5.5.2",
-  "name": "Quick Pill 5.5.2",
-  "releaseDate": "2026-10-20",
+  "version": "5.5.3",
+  "name": "Quick Pill 5.5.3",
+  "releaseDate": "2026-10-21",
   "mandatory": false,
   "minSupportedVersion": "4.0.0",
   "changelog": [
-    "Fluid Spring Morphing & Pop-ins: Optical blur crossfades, shelf pop-ins, and spring physics morphing.",
-    "Local JARVIS AI Companion: Integrated AskAI module with configurable Ollama/OpenAI API settings and status indicator.",
-    "Minimalist Calendar & macOS Notch: Customizable calendar module, customizable shortcut recorder, and notch toggle.",
-    "Notification Focus & App Activation: Direct app focus upon clicking notifications with smooth drawer transitions.",
-    "Quick App Launcher & Notes Sync: Enhanced search index, workspace profiles, and crash-resilient note taking."
+    "Fix: Prevent file duplication on outbound drag in File Shelf.",
+    "Fix: Suppress Caps Lock / OSD overlay while notch is expanded.",
+    "Feature: Merged Browser Search into App Launcher with auto-focus.",
+    "Feature: Keep-Open Lock — notch stays expanded while JARVIS is loading or input is focused.",
+    "Polish: Auto-focus inputs across To-Do List, Ask AI, Quick Notes, and Spotlight Launcher."
   ],
   "platforms": {
     "win32-x64": {
-      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.2/QuickPill-Windows-v5.5.2-Setup.exe",
-      "sha256": "24508c29b5f7325fe63d4ec68dc7ec89cc5c7bf6ea364103090a12f4e2dbedec",
-      "size": 168780288,
+      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.3/QuickPill-Windows-v5.5.3-Setup.exe",
+      "sha256": "5a3a311260e2f9904a1a9701a8099b050735618e32b776363cf1df0f986730af",
+      "size": 135783907,
       "installerType": "squirrel"
     }
   }
