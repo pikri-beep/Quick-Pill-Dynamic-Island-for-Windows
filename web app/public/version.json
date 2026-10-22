@@ -1,11 +1,14 @@
 {
-  "version": "5.5.7-canary",
+  "version": "5.5.6",
   "name": "Quick Pill 5.5.6",
   "releaseDate": "2026-10-22",
   "mandatory": false,
   "minSupportedVersion": "4.0.0",
   "changelog": [
-    "Canary build used to verify the auto-updater end to end."
+    "Fix: The auto-updater now really installs the update. The installer helper was started as a child of Quick Pill, so Windows killed it together with the app - it is now started through the Windows shell and survives the restart.",
+    "Fix: The installer helper waits for Quick Pill to fully exit, releases the audio helper lock, installs silently and starts the new version again.",
+    "Fix: The update detection is written to quick-pill.log so a pending update is visible even when the automatic download is disabled.",
+    "Note: Updates released before v5.5.6 have to be installed once manually (run the downloaded Setup.exe), after that the in-app updater works again."
   ],
   "platforms": {
     "win32-x64": {
