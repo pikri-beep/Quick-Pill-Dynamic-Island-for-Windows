@@ -18,8 +18,6 @@ BUGS
     - Settle time hover 140ms -> 20ms, collapse 280ms -> 90ms, poll cursor 50ms -> 30ms. Anti-flicker tetap dijaga lewat native hit-test + verifikasi posisi kursor. Terukur: cursor di notch -> expand ~185ms, cursor keluar -> collapse ~105ms.
 
 ALWAYS DO
-- [ ] push ke github ke branch main agar trigger update
+- [x] push ke github ke branch main agar trigger update
 
 
-Next Time
-- [] Pengaturan AI, sediakan groq untuk opsi AI (kecuali diriku karena aku ada JARVIS)

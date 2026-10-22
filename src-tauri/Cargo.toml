@@ -1,6 +1,6 @@
 [package]
 name = "quick-pill"
-version = "5.5.3"
+version = "5.5.8"
 description = "A Dynamic Island for Windows"
 authors = ["Abrar Nabil"]
 edition = "2021"
@@ -17,7 +17,10 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+base64 = "0.22"
+ring = "0.17"
 sysinfo = "0.33"
 arboard = "3"
 windows = { version = "0.58", features = [
@@ -29,9 +32,16 @@ windows = { version = "0.58", features = [
     "Win32_System_Power",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_WindowsProgramming",
+    "Win32_Storage_FileSystem",
+    "Storage_Streams",
     "Media_Control",
-    "Foundation",
-    "Storage_Streams"
+    "Foundation"
 ] }
 
 [profile.release]

@@ -2783,6 +2783,45 @@ export default function Island() {
 
   // Auto-Expand Notch on Dragging Files Near Top Screen & webUtils Path Resolution
   useEffect(() => {
+    const addShelfFiles = (rawFiles) => {
+      const newFiles = rawFiles.map(f => ({
+        name: f.name,
+        size: typeof f.size === 'number' ? formatBytes(f.size) : (f.size || ''),
+        path: f.path || '',
+        type: (f.name?.split('.').pop() || f.type || 'file').toLowerCase()
+      }));
+
+      // Pre-cache 32x32 drag icons for native startDrag
+      newFiles.forEach(f => {
+        if (f.path && window.electronAPI?.cacheFileIcon) {
+          window.electronAPI.cacheFileIcon(f.path).catch(() => {});
+        }
+      });
+
+      setShelfFiles(prev => {
+        // Deduplicate by file path: if existingFiles has the same path, do not add a duplicate copy
+        const existingPaths = new Set(prev.map(f => f.path).filter(Boolean));
+        const uniqueNewFiles = newFiles.filter(f => !f.path || !existingPaths.has(f.path));
+        if (uniqueNewFiles.length === 0) return prev;
+        const updated = [...uniqueNewFiles, ...prev];
+        localStorage.setItem("shelf-files", JSON.stringify(updated.slice(0, 20)));
+        return updated.slice(0, 20);
+      });
+    };
+
+    // Tauri delivers the real file paths through the native drag-drop event
+    // (WebView2 does not expose `File.path`).
+    const handleNativeDrop = (e) => {
+      const files = Array.isArray(e?.detail) ? e.detail : [];
+      if (files.length === 0) return;
+      setIsDragOverShelf(false);
+      addShelfFiles(files);
+    };
+    const handleNativeDragOver = (e) => {
+      setIsDragOverShelf(Boolean(e?.detail));
+      updateMouseIgnore(false, true);
+    };
+
     const handleDragEnter = (e) => {
       if (isOutboundDragRef.current) return;
       e.preventDefault();
@@ -2824,32 +2863,20 @@ export default function Island() {
       isOutboundDragRef.current = false;
       setIsDragOverShelf(false);
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        const newFiles = Array.from(e.dataTransfer.files).map(f => {
+        const rawFiles = Array.from(e.dataTransfer.files).map(f => {
           const resolvedPath = window.electronAPI?.getFilePath?.(f) || f.path || "";
           return {
             name: f.name,
-            size: formatBytes(f.size),
-            path: resolvedPath,
-            type: f.name.split('.').pop()?.toLowerCase() || 'file'
+            size: f.size,
+            path: resolvedPath
           };
         });
 
-        // Pre-cache 32x32 drag icons for native startDrag
-        newFiles.forEach(f => {
-          if (f.path && window.electronAPI?.cacheFileIcon) {
-            window.electronAPI.cacheFileIcon(f.path).catch(() => {});
-          }
-        });
+        // WebView2 does not expose the file path - the native Tauri event
+        // delivers it instead.
+        if (rawFiles.some(f => !f.path)) return;
 
-        setShelfFiles(prev => {
-          // Deduplicate by file path: if existingFiles has the same path, do not add a duplicate copy
-          const existingPaths = new Set(prev.map(f => f.path).filter(Boolean));
-          const uniqueNewFiles = newFiles.filter(f => !f.path || !existingPaths.has(f.path));
-          if (uniqueNewFiles.length === 0) return prev;
-          const updated = [...uniqueNewFiles, ...prev];
-          localStorage.setItem("shelf-files", JSON.stringify(updated.slice(0, 20)));
-          return updated.slice(0, 20);
-        });
+        addShelfFiles(rawFiles);
       }
     };
 
@@ -2863,12 +2890,16 @@ export default function Island() {
     window.addEventListener("dragleave", handleDragLeave);
     window.addEventListener("drop", handleDrop);
     window.addEventListener("dragend", resetDragState);
+    window.addEventListener("qp:file-drop", handleNativeDrop);
+    window.addEventListener("qp:file-drag-over", handleNativeDragOver);
     return () => {
       window.removeEventListener("dragenter", handleDragEnter);
       window.removeEventListener("dragover", handleDragOver);
       window.removeEventListener("dragleave", handleDragLeave);
       window.removeEventListener("drop", handleDrop);
       window.removeEventListener("dragend", resetDragState);
+      window.removeEventListener("qp:file-drop", handleNativeDrop);
+      window.removeEventListener("qp:file-drag-over", handleNativeDragOver);
     };
   }, [mode, currentTabId, updateMouseIgnore]);
 
