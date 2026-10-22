@@ -178,6 +178,12 @@ export function initBridge() {
     getNotifications: () => Promise.resolve([]),
     dismissNotification: () => Promise.resolve(true),
     focusNotificationApp: () => Promise.resolve(true),
+    openNotificationTarget: (payload) => {
+      const target = payload || {};
+      if (target.url) return invoke('open_external', { url: target.url }).catch(() => false);
+      return Promise.resolve(true);
+    },
+    onDismissLatestNotification: (cb) => createTauriListener('dismiss-latest-notification', cb),
 
     onUSBChange: (cb) => createTauriListener('usb-change', cb),
 

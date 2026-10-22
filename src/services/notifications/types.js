@@ -140,6 +140,8 @@ function normalizeNotification(raw, providerId = "windows-notification-listener"
   const title = sanitizeString(raw.Title || raw.title || "", 120);
   const body = sanitizeString(raw.Body || raw.body || "", 300);
   const icon = raw.Icon || raw.icon || raw.applicationIcon || "";
+  // Optional deep link (web notifications, mail clients, chat apps …)
+  const url = sanitizeString(raw.Url || raw.url || raw.launch || raw.activationUrl || "", 500);
 
   // Call detection
   const { isCall, callType } = detectCallInfo(applicationName, title, body);
@@ -181,6 +183,7 @@ function normalizeNotification(raw, providerId = "windows-notification-listener"
     applicationIcon: icon,
     title,
     body,
+    url: url || undefined,
     senderName: senderName || undefined,
     conversationId: conversationId || undefined,
     isCall,

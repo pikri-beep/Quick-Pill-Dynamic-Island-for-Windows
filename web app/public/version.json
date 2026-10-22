@@ -1,18 +1,21 @@
 {
-  "version": "5.5.7",
-  "name": "Quick Pill 5.5.7",
+  "version": "5.5.8",
+  "name": "Quick Pill 5.5.8",
   "releaseDate": "2026-10-22",
   "mandatory": false,
   "minSupportedVersion": "4.0.0",
   "changelog": [
-    "Polish: The notch reacts much faster again - the hover settle time is down to 20 ms and the notch collapses 90 ms after the cursor leaves instead of 140/280 ms, while the anti-flicker protection stays in place.",
-    "Polish: The native cursor hit-test now polls every 30 ms instead of 50 ms, so the notch opens a few milliseconds sooner."
+    "Feature: Hovering a notification banner now jumps straight into the Notifications module instead of the default tab.",
+    "Feature: Notifications can be swiped upwards to dismiss them - both the banner and the rows in the notification centre - with a little dust puff on the way out.",
+    "Feature: New global shortcut Alt+Shift+D ('Dismiss Notification') flicks the newest notification away without touching the mouse.",
+    "Feature: Clicking a notification now opens its target - the deep link of the notification when it has one, otherwise the app that produced it (an already running window is activated first).",
+    "Polish: The notification model keeps the optional deep link of a notification so web and mail notifications can open the right page."
   ],
   "platforms": {
     "win32-x64": {
-      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.7/QuickPill-Windows-v5.5.7-Setup.exe",
-      "sha256": "c4e6621149101c347074c537e059d5a4702671ca67adcb3432f7c72c57b249e1",
-      "size": 135831845,
+      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.8/QuickPill-Windows-v5.5.8-Setup.exe",
+      "sha256": "c5f8da0e8b11d623ed0ad670d565612f2a99a4eebaed458d20ff9db093fa1b64",
+      "size": 135837444,
       "installerType": "nsis"
     }
   }

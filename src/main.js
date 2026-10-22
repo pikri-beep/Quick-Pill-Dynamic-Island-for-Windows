@@ -420,7 +420,8 @@ const DEFAULT_TAB_SHORTCUTS = {
   7: "Alt+V",   // Clipboard
   8: "Alt+T",   // Tasks
   10: "Alt+R",  // Timer
-  "minimal-notch": "Alt+Shift+M" // Minimal Notch Toggle
+  "minimal-notch": "Alt+Shift+M", // Minimal Notch Toggle
+  "dismiss-notification": "Alt+Shift+D" // Swipe up the newest notification
 };
 
 let registeredTabShortcuts = [];
@@ -488,6 +489,27 @@ function registerGlobalTabShortcuts(shortcutsMap) {
     // Strictly prevent Ctrl (Click-Through feature exclusivity)
     if (accel.toUpperCase().includes("CTRL") || accel.toUpperCase().includes("CONTROL")) {
       logToFile(`Refusing to register shortcut with Ctrl: ${accel}`);
+      continue;
+    }
+
+    if (tabId === "dismiss-notification") {
+      try {
+        const ok = globalShortcut.register(accel, () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("dismiss-latest-notification");
+          }
+          if (settingsWindow && !settingsWindow.isDestroyed()) {
+            settingsWindow.webContents.send("dismiss-latest-notification");
+          }
+        });
+        if (ok) {
+          registeredTabShortcuts.push(accel);
+        } else {
+          logToFile(`Global shortcut conflict/in-use for ${accel} (dismiss-notification)`);
+        }
+      } catch (err) {
+        logToFile(`Error registering global shortcut ${accel}:`, err);
+      }
       continue;
     }
 
@@ -3758,7 +3780,34 @@ async function focusNotificationAppInternal(appIdOrName, appNameHint) {
   const rawAppName = (appNameHint || "").trim();
   logToFile(`focusNotificationApp: appId="${rawAppId}", appName="${rawAppName}"`);
 
-  // 1. Direct UWP AppUserModelId execution via Windows Shell (Instant & Native for Windows Store Apps like WhatsApp, Spotify, etc.)
+  // 1. Activate an already running window of that app first - bringing the
+  //    existing window to the front feels much better than starting a new one.
+  try {
+    const launcher = typeof getLauncherEngine === "function" ? getLauncherEngine() : null;
+    if (launcher && typeof launcher.getRunningWindows === "function" && typeof launcher.activateWindow === "function") {
+      const windows = await launcher.getRunningWindows({ forceRefresh: true });
+      const queries = [rawAppName, rawAppId].filter(Boolean).map((q) => q.toLowerCase());
+      const matched = windows.find((w) => {
+        if (!w) return false;
+        const p = (w.processName || "").toLowerCase();
+        const t = (w.title || "").toLowerCase();
+        return queries.some(
+          (q) => p === q || p.includes(q) || q.includes(p) || t.includes(q)
+        );
+      });
+      if (matched && matched.hWnd) {
+        const actRes = await launcher.activateWindow(matched.hWnd);
+        if (actRes && actRes.success) {
+          logToFile(`focusNotificationApp: activated running window of "${rawAppName || rawAppId}"`);
+          return true;
+        }
+      }
+    }
+  } catch (err) {
+    logToFile("Running window lookup in focusNotificationApp failed:", err);
+  }
+
+  // 2. Direct UWP AppUserModelId execution via Windows Shell (Instant & Native for Windows Store Apps like WhatsApp, Spotify, etc.)
   if (rawAppId && (rawAppId.includes("!") || rawAppId.toLowerCase().startsWith("shell:appsfolder\\"))) {
     try {
       const target = rawAppId.toLowerCase().startsWith("shell:appsfolder\\")
@@ -3972,6 +4021,25 @@ ipcMain.handle("dismiss-notification", async (event, notifId) => {
 
 ipcMain.handle("focus-notification-app", async (event, appId, appName) => {
   return await focusNotificationAppInternal(appId, appName);
+});
+
+/**
+ * Open the target of a notification: a deep link when the notification
+ * carries one, otherwise the app that produced it.
+ */
+ipcMain.handle("open-notification-target", async (event, payload) => {
+  const data = payload || {};
+  const url = String(data.url || "").trim();
+  if (url) {
+    try {
+      await shell.openExternal(url);
+      logToFile(`openNotificationTarget: opened url ${url}`);
+      return true;
+    } catch (err) {
+      logToFile("openNotificationTarget: failed to open url:", err);
+    }
+  }
+  return await focusNotificationAppInternal(data.appId || "", data.appName || "");
 });
 
 // Smart Notification Actions IPC handlers

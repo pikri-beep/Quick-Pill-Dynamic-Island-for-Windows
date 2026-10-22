@@ -47,6 +47,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getNotifications: () => ipcRenderer.invoke('get-notifications'),
   dismissNotification: (id) => ipcRenderer.invoke('dismiss-notification', id),
   focusNotificationApp: (appId, appName) => ipcRenderer.invoke('focus-notification-app', appId, appName),
+  openNotificationTarget: (payload) => ipcRenderer.invoke('open-notification-target', payload || {}),
+  onDismissLatestNotification: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('dismiss-latest-notification', handler);
+    return () => ipcRenderer.removeListener('dismiss-latest-notification', handler);
+  },
   setNotchHitbox: (width, height, expanded, anchorX) =>
     ipcRenderer.send('notch:set-hitbox', { width, height, expanded, anchorX }),
   onNotchCursorEnter: (callback) => {

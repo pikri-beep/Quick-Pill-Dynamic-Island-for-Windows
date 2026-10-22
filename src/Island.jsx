@@ -8,6 +8,7 @@ import MascotStandbyHub from "./components/MascotStandbyHub";
 import CalendarModule from "./components/CalendarModule";
 import AskAI from "./components/AskAI";
 import ErrorBoundary from "./components/ErrorBoundary";
+import SwipeUpItem from "./components/SwipeUpItem";
 import { dissolveElement, spawnDustBurst } from "./services/dust/dustBurst";
 import { playNotificationSound, playCallSound } from "./services/audio/notificationSound";
 import {
@@ -2002,6 +2003,12 @@ export default function Island() {
   const [completingTaskIds, setCompletingTaskIds] = useState(() => new Set());
   const [isHovered, setIsHovered] = useState(false);
   const isHoveredRef = useRef(false);
+  // True while the native cursor watcher reports the cursor on the notch.
+  const nativeHoverRef = useRef(false);
+  // Mirror of the notification banner state (readable before the state exists)
+  const notificationAlertRef = useRef(null);
+  // Holds the latest "jump into the notification centre" routine
+  const jumpToNotificationCenterRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [albumHovered, setAlbumHovered] = useState(false);
@@ -2362,6 +2369,12 @@ export default function Island() {
         hoverIntentTimer.current = setTimeout(() => {
           hoverIntentTimer.current = null;
           // The native hit-test already confirmed the cursor is on the notch.
+          // A visible notification banner takes the user straight into the
+          // notification centre instead of the default module.
+          if (notificationAlertRef.current) {
+            jumpToNotificationCenterRef.current?.();
+            return;
+          }
           setMode("large");
         }, HOVER_OPEN_DELAY_MS);
       }));
@@ -2526,6 +2539,7 @@ export default function Island() {
   // Live Notification Alert State
   const [notificationAlert, setNotificationAlert] = useState(null);
   const notificationAlertTimeout = useRef(null);
+  notificationAlertRef.current = notificationAlert;
   const seenNotificationIds = useRef(new Set());
   const lastCallIdRef = useRef(null);
   // Notifications currently dissolving into dust (hidden until the registry confirms)
@@ -3261,8 +3275,6 @@ export default function Island() {
   const lastPointerRef = useRef({ x: -9999, y: -9999 });
   // Holds the latest collapse routine so early effects can call it safely.
   const collapseNotchRef = useRef(() => {});
-  // True while the native cursor watcher reports the cursor on the notch.
-  const nativeHoverRef = useRef(false);
 
   const updateDragging = (val) => {
     isDraggingRef.current = val;
@@ -4499,6 +4511,7 @@ export default function Island() {
             title: latest.title,
             body: latest.body,
             icon: latest.applicationIcon,
+            url: latest.url,
             priority: latest.priority,
             isCall: latest.isCall,
             callType: latest.callType
@@ -4670,6 +4683,102 @@ export default function Island() {
       await window.electronAPI.notifications.dismissGroup(groupId);
     }
   }, []);
+
+  /**
+   * Dismiss the notification that is currently shown as a banner.
+   * Used by the swipe up gesture and by the "dismiss notification" shortcut.
+   */
+  const dismissCurrentNotification = useCallback(async () => {
+    const alert = notificationAlert;
+    if (!alert) return false;
+
+    const targetId = alert.id || alert.sourceNotificationId || "";
+    // Remove the banner right away, the registry update follows
+    setNotificationAlert(null);
+    setMode("still");
+    window.electronAPI?.invalidateWindow?.();
+
+    try {
+      if (targetId && window.electronAPI?.notifications?.dismiss) {
+        await window.electronAPI.notifications.dismiss(targetId);
+      } else if (window.electronAPI?.dismissNotification && targetId) {
+        await window.electronAPI.dismissNotification(targetId);
+      }
+    } catch (_) {}
+    return true;
+  }, [notificationAlert]);
+
+  // Swipe up on the banner dismisses the notification (and leaves a dust puff)
+  const handleBannerSwipeDismiss = useCallback(() => {
+    if (!notificationAlert) return;
+    const stage = document.querySelector(".notch-stage-toast");
+    if (stage) {
+      spawnDustBurst(stage.getBoundingClientRect(), { particleCount: 16 });
+    }
+    dismissCurrentNotification();
+  }, [notificationAlert, dismissCurrentNotification]);
+
+  // Swipe up on a row of the notification centre dismisses that notification
+  const handleSwipeDismissNotification = useCallback((notifId) => {
+    if (!notifId) return;
+    const card = document.querySelector(`[data-notif-id="${notifId}"]`);
+    if (card) {
+      spawnDustBurst(card.getBoundingClientRect(), { particleCount: 18 });
+    }
+    setDismissingNotifIds(prev => {
+      const next = new Set(prev);
+      next.add(notifId);
+      return next;
+    });
+    // Release the lock in case the notification survives the dismiss
+    window.setTimeout(() => {
+      setDismissingNotifIds(prev => {
+        const next = new Set(prev);
+        next.delete(notifId);
+        return next;
+      });
+    }, 3000);
+    handleExecuteAction(notifId, 'dismiss');
+  }, [handleExecuteAction]);
+
+  /**
+   * Hovering a notification banner jumps straight into the notification
+   * centre (Notifications module) instead of expanding the default tab.
+   */
+  const jumpToNotificationCenter = useCallback(() => {
+    setMode("large");
+    // The notifications module can be hidden by the user — fall back to the
+    // default tab in that case.
+    if (visibleTabs.includes(5)) {
+      setTabState([5, currentTabId > 5 ? -1 : 1]);
+    }
+  }, [currentTabId, visibleTabs]);
+
+  jumpToNotificationCenterRef.current = jumpToNotificationCenter;
+
+  // Global shortcut: swipe up / dismiss the newest notification
+  useEffect(() => {
+    if (!window.electronAPI?.onDismissLatestNotification) return;    const cleanup = window.electronAPI.onDismissLatestNotification(() => {
+      if (notificationAlert) {
+        dismissCurrentNotification();
+        return;
+      }
+      // Fall back to the top entry of the notification centre
+      const list = Array.isArray(notificationSnapshot?.active) ? notificationSnapshot.active : [];
+      if (list.length > 0) {
+        const newest = list[list.length - 1];
+        const id = newest?.id || newest?.sourceNotificationId || "";
+        if (id) {
+          if (window.electronAPI?.notifications?.dismiss) {
+            window.electronAPI.notifications.dismiss(id);
+          } else if (window.electronAPI?.dismissNotification) {
+            window.electronAPI.dismissNotification(id);
+          }
+        }
+      }
+    });
+    return () => cleanup?.();
+  }, [notificationAlert, notificationSnapshot, dismissCurrentNotification]);
 
 
   useEffect(() => {
@@ -4951,8 +5060,13 @@ export default function Island() {
         const combo = `Alt+${keyChar}`;
         for (const [idStr, shortcut] of Object.entries(tabShortcuts)) {
           if (shortcut && shortcut.toUpperCase() === combo) {
-            e.preventDefault();
             const targetId = parseInt(idStr, 10);
+            if (Number.isNaN(targetId)) {
+              // Pseudo shortcuts (minimal notch, dismiss notification) are handled
+              // by the global shortcut registration in the main process
+              continue;
+            }
+            e.preventDefault();
             setMode("large");
             setTabState([targetId, targetId > currentTabId ? 1 : -1]);
             break;
@@ -5192,12 +5306,23 @@ export default function Island() {
           setCtrlState(false);
           updateMouseIgnore(false, true);
 
-          // If a temporary notification alert is currently active, keep banner visible
+          // A notification banner takes the user straight into the
+          // notification centre when it is hovered
           if (notificationAlert) {
             if (notificationAlertTimeout.current) {
               clearTimeout(notificationAlertTimeout.current);
               notificationAlertTimeout.current = null;
             }
+            if (hoverIntentTimer.current) {
+              clearTimeout(hoverIntentTimer.current);
+              hoverIntentTimer.current = null;
+            }
+            hoverIntentTimer.current = setTimeout(() => {
+              hoverIntentTimer.current = null;
+              if (notificationAlertRef.current) {
+                jumpToNotificationCenterRef.current?.();
+              }
+            }, HOVER_OPEN_DELAY_MS);
             return;
           }
 
@@ -5607,6 +5732,7 @@ export default function Island() {
 
                 // General Toast / Caps Lock / App Notifications
                 return (
+                  <SwipeUpItem overlay onDismiss={handleBannerSwipeDismiss}>
                   <div 
                     className="notch-stage notch-stage-toast toast-popin"
                     style={{ cursor: notificationAlert ? 'pointer' : 'default' }}
@@ -5615,9 +5741,12 @@ export default function Island() {
                         e.stopPropagation();
                         const aId = notificationAlert.applicationId || notificationAlert.appId || '';
                         const aName = notificationAlert.applicationName || notificationAlert.appName || notificationAlert.title || '';
-                      if (window.electronAPI?.focusNotificationApp) {
-                        window.electronAPI.focusNotificationApp(aId, aName);
-                      }
+                        const aUrl = notificationAlert.url || '';
+                        if (window.electronAPI?.openNotificationTarget) {
+                          window.electronAPI.openNotificationTarget({ appId: aId, appName: aName, url: aUrl });
+                        } else if (window.electronAPI?.focusNotificationApp) {
+                          window.electronAPI.focusNotificationApp(aId, aName);
+                        }
                       setNotificationAlert(null);
                       setMode("still");
                     }
@@ -5666,6 +5795,7 @@ export default function Island() {
                     )}
                   </div>
                 </div>
+                </SwipeUpItem>
               );
             })() : isMicroMode ? (
               /* Micro-Strip State (96x5) */
@@ -7259,14 +7389,22 @@ export default function Island() {
                             const targetAppName = appName || notif.title || '';
 
                             return (
+                              <SwipeUpItem
+                                key={nId}
+                                onDismiss={() => handleSwipeDismissNotification(nId)}
+                              >
                               <div
                                 key={nId}
                                 className="notif-item-card"
                                 data-no-toggle="true"
+                                data-notif-id={nId}
                                 title={`Open ${targetAppName || "Application"}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  if (window.electronAPI?.focusNotificationApp) {
+                                  const notifUrl = notif.url || '';
+                                  if (window.electronAPI?.openNotificationTarget) {
+                                    window.electronAPI.openNotificationTarget({ appId: targetAppId, appName: targetAppName, url: notifUrl });
+                                  } else if (window.electronAPI?.focusNotificationApp) {
                                     window.electronAPI.focusNotificationApp(targetAppId, targetAppName);
                                   }
                                   setMode("still");
@@ -7374,6 +7512,7 @@ export default function Island() {
                                   </button>
                                 </div>
                               </div>
+                              </SwipeUpItem>
                             );
                           })}
                         </div>

@@ -37,6 +37,7 @@ const MODULES_CONFIG = [
 
 const DEFAULT_SHORTCUTS = {
   "minimal-notch": "Alt+Shift+M", // Minimal Notch Toggle
+  "dismiss-notification": "Alt+Shift+D", // Swipe up / dismiss the newest notification
   0: "Alt+B",   // Browser Search
   1: "Alt+W",   // Water Reminder
   2: "Alt+O",   // Standby Clock
@@ -57,6 +58,7 @@ const DEFAULT_SHORTCUTS = {
 
 const MODULE_NAMES = {
   "minimal-notch": "Toggle Minimal Notch",
+  "dismiss-notification": "Dismiss Notification",
   0: "Browser Search",
   1: "Water Reminder",
   2: "Standby Clock",
@@ -77,6 +79,7 @@ const MODULE_NAMES = {
 
 const MODULE_DESCRIPTIONS = {
   "minimal-notch": "Quick shortcut to force collapse / expand ultra-slim micro-strip",
+  "dismiss-notification": "Swipe up the newest notification without touching the mouse",
   0: "Instant web search bar with engine presets",
   1: "Hydration tracking and customizable reminder alerts",
   2: "Digital & analog clock with seconds and date display",
@@ -97,6 +100,7 @@ const MODULE_DESCRIPTIONS = {
 
 const MODULE_ICONS = {
   "minimal-notch": Minus,
+  "dismiss-notification": Bell,
   0: Search,
   1: Droplet,
   2: Clock,
@@ -117,6 +121,7 @@ const MODULE_ICONS = {
 
 const MODULE_COLORS = {
   "minimal-notch": "#38bdf8",
+  "dismiss-notification": "#a855f7",
   0: "#eab308",
   1: "#0284c7",
   2: "#38bdf8",
@@ -137,6 +142,7 @@ const MODULE_COLORS = {
 
 const SHORTCUT_ITEMS = [
   "minimal-notch",
+  "dismiss-notification",
   2, 3, 10, 1, 13, 11, 12, 14, 15, 16, 5, 8, 4, 6, 7, 0
 ];
 
