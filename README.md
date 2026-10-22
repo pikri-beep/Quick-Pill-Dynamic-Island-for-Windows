@@ -1,4 +1,4 @@
-<![CDATA[<div align="center">
+<div align="center">
 
 # ✦ Vision
 
@@ -6,12 +6,11 @@
 
 Music, notifications, system stats, timers, and everything you need — tucked into the top of your screen.
 
-[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-5.5.8-blue?style=flat-square)](package.json)
-[![Windows](https://img.shields.io/badge/Platform-Windows%2010%20%26%2011-0078D4?style=flat-square&logo=windows11&logoColor=white)]()
-[![Vibe Coded](https://img.shields.io/badge/💫_Vibe-Coded-ff69b4?style=flat-square)]()
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE) [![Version](https://img.shields.io/badge/Version-5.5.8-blue?style=flat-square)](../../releases) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%26%2011-0078D4?style=flat-square) ![Vibe coded](https://img.shields.io/badge/Vibe%20Coded-100%25-ff69b4?style=flat-square)
 
 https://github.com/user-attachments/assets/bd057d18-f65e-4cf4-bf66-a5d107f18658
+
+*Hover the notch to expand it — click to pin it open.*
 
 </div>
 
@@ -23,9 +22,9 @@ Vision is a **Dynamic Island companion for Windows** — a sleek, always-on-top 
 
 Think of it as Apple's Dynamic Island, but for everyone on Windows.
 
-> [!NOTE]
-> **This project is 100% vibe coded.** ✨
-> Built entirely with the help of AI coding assistants (Claude, Gemini, ChatGPT, etc.) through natural language prompts and iterative conversations. No traditional line-by-line coding — just vibes, ideas, and AI pair programming. The entire codebase, from the Electron main process to every React component and CSS animation, was generated through vibe coding sessions.
+> **Note — this project is 100% vibe coded.** ✨
+>
+> Built entirely with the help of AI coding assistants (Claude, Gemini, ChatGPT, etc.) through natural language prompts and iterative conversations. There was no traditional line-by-line coding — just vibes, ideas, and AI pair programming. The entire codebase, from the Electron main process to every React component and CSS animation, was generated through vibe coding sessions.
 
 ---
 
@@ -99,26 +98,28 @@ Huge respect to all three. 🙏
 
 ### Download
 
-> Coming soon — check [Releases](../../releases) for the latest build.
+Grab the latest installer from the [Releases page](../../releases/latest) — `QuickPill-Windows-vX.Y.Z-Setup.exe`. Windows 10 or 11, 64-bit.
+
+The app updates itself after that: it checks for a new release on launch and can download and install it in the background.
 
 ### Build from Source
 
 ```bash
 # Clone the repo
-git clone https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows.git
-cd Quick-Pill-Dynamic-Island-for-Windows
+git clone https://github.com/pikri-beep/Vision-pill.git
+cd Vision-pill
 
 # Install dependencies
 npm install
 
-# Start development server (Electron + Vite HMR)
+# Start the development app (Electron + Vite HMR)
 npm start
 
-# Build Windows installer
+# Build the Windows installer
 npm run build
 ```
 
-**Prerequisites:** Node.js 16+, npm, Visual Studio Build Tools (Windows)
+**Prerequisites:** Node.js 16+, npm, and Visual Studio Build Tools (Windows).
 
 ---
 
@@ -126,11 +127,11 @@ npm run build
 
 | Shortcut | Action |
 | :--- | :--- |
-| `Ctrl + [0-9]` | Jump to specific tab |
-| `← / →` | Navigate between tabs |
+| `Ctrl + [0-9]` | Jump to a specific tab |
+| `←` / `→` | Navigate between tabs |
 | `Mouse Wheel` | Scroll through tabs |
 | `Ctrl + Hover` | Click-through mode (85% transparent) |
-| `Alt + Shift + D` | Dismiss latest notification |
+| `Alt + Shift + D` | Dismiss the latest notification |
 | `Click Island` | Toggle Large / Still mode |
 
 ---
@@ -156,6 +157,7 @@ npm run build
 This entire project was built through **vibe coding** — a development approach where you describe what you want in natural language, and AI writes the code. Every feature, animation, bug fix, and design decision in Vision was prompted, iterated, and refined through conversations with AI assistants.
 
 **What this means:**
+
 - 🧠 The ideas, design direction, and product vision are human
 - 🤖 The code implementation is AI-generated
 - 🔄 Development happens through rapid prompt → generate → test → refine cycles
@@ -185,4 +187,3 @@ Vision is open source under the [MIT License](LICENSE).
 **Vision** — *A living notch for Windows.*
 
 </div>
-]]>
