@@ -6,10 +6,15 @@
  * so the behaviour can be unit tested (see tests/hoverPolicy.test.js).
  */
 
-/** The cursor has to rest on the notch for this long before it opens. */
-export const HOVER_OPEN_DELAY_MS = 140;
+/**
+ * The cursor has to rest on the notch for this long before it opens.
+ * The native cursor hit-test already provides reliable hover detection, so
+ * this only needs to swallow a single stray event - keep it short so the
+ * notch still feels instant.
+ */
+export const HOVER_OPEN_DELAY_MS = 20;
 /** Grace period before the notch collapses again. */
-export const HOVER_CLOSE_DELAY_MS = 280;
+export const HOVER_CLOSE_DELAY_MS = 90;
 /** How far the cursor may drift outside the notch before it collapses. */
 export const HOVER_EDGE_TOLERANCE_PX = 8;
 

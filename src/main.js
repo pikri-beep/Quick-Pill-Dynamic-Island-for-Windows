@@ -2494,12 +2494,13 @@ function startCursorHitTestWatcher() {
         logToFile("[cursor-hit-test] watcher error:", err);
       }
     }
-  }, 50);
+  }, 30);
 }
 
 ipcMain.on("notch:set-hitbox", (event, payload) => {
   const data = payload || {};
   setNotchHitbox(data.width, data.height, data.expanded, data.anchorX);
+  logToFile(`[notch-hitbox] ${data.width}x${data.height} expanded=${data.expanded}`);
 });
 
 const createWindow = () => {

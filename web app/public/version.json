@@ -1,20 +1,18 @@
 {
-  "version": "5.5.6",
-  "name": "Quick Pill 5.5.6",
+  "version": "5.5.7",
+  "name": "Quick Pill 5.5.7",
   "releaseDate": "2026-10-22",
   "mandatory": false,
   "minSupportedVersion": "4.0.0",
   "changelog": [
-    "Fix: The auto-updater now really installs the update. The installer helper was started as a child of Quick Pill, so Windows killed it together with the app - it is now started through the Windows shell and survives the restart.",
-    "Fix: The installer helper waits for Quick Pill to fully exit, releases the audio helper lock, installs silently and starts the new version again.",
-    "Fix: The update detection is written to quick-pill.log so a pending update is visible even when the automatic download is disabled.",
-    "Note: Updates released before v5.5.6 have to be installed once manually (run the downloaded Setup.exe), after that the in-app updater works again."
+    "Polish: The notch reacts much faster again - the hover settle time is down to 20 ms and the notch collapses 90 ms after the cursor leaves instead of 140/280 ms, while the anti-flicker protection stays in place.",
+    "Polish: The native cursor hit-test now polls every 30 ms instead of 50 ms, so the notch opens a few milliseconds sooner."
   ],
   "platforms": {
     "win32-x64": {
-      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.6/QuickPill-Windows-v5.5.6-Setup.exe",
-      "sha256": "f7052036a694d37be14dec9e816de4eb28417aa3632a4fb4d0de20542920cf2e",
-      "size": 135831410,
+      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.7/QuickPill-Windows-v5.5.7-Setup.exe",
+      "sha256": "c4e6621149101c347074c537e059d5a4702671ca67adcb3432f7c72c57b249e1",
+      "size": 135831845,
       "installerType": "nsis"
     }
   }

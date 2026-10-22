@@ -5265,7 +5265,7 @@ export default function Island() {
             mouseLeaveTimer.current = setTimeout(() => {
               mouseLeaveTimer.current = null;
               collapseNotch();
-            }, 120);
+            }, 60);
             return;
           }
 

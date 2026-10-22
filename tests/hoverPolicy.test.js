@@ -8,6 +8,9 @@ test("hover policy - loads the shared constants and helpers", async () => {
   assert.ok(hoverPolicy.HOVER_OPEN_DELAY_MS > 0);
   assert.ok(hoverPolicy.HOVER_CLOSE_DELAY_MS > hoverPolicy.HOVER_OPEN_DELAY_MS);
   assert.ok(hoverPolicy.HOVER_EDGE_TOLERANCE_PX > 0);
+  // The notch has to feel instant - the native hit-test does the real work
+  assert.ok(hoverPolicy.HOVER_OPEN_DELAY_MS <= 60, "open delay must stay imperceptible");
+  assert.ok(hoverPolicy.HOVER_CLOSE_DELAY_MS <= 150, "close delay must stay snappy");
 });
 
 test("hover policy - detects a pointer inside the notch", () => {
