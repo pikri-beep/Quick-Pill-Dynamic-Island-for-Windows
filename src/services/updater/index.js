@@ -14,6 +14,8 @@
  * unit testable — see tests/updater.test.js.
  */
 
+const path = require("node:path");
+
 /** How long the helper waits for the running app to disappear. */
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 120;
 /** How long the helper waits for the installer process to finish. */
@@ -136,9 +138,48 @@ function buildInstallCommand(options = {}) {
   };
 }
 
+/**
+ * Build a .cmd wrapper that runs the helper script hidden.
+ *
+ * The wrapper is launched through the Windows shell (`shell.openPath`) so the
+ * helper is not part of the Electron job object. Without that, the helper is
+ * killed together with the app and the update never gets installed.
+ *
+ * @param {string} scriptPath absolute path of the .ps1 helper script
+ * @returns {string} the content of the .cmd file
+ */
+function buildLauncherBatch(scriptPath) {
+  if (!scriptPath) {
+    throw new Error("buildLauncherBatch requires a scriptPath");
+  }
+  return (
+    "@echo off\r\n" +
+    'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+    String(scriptPath).replace(/"/g, '""') +
+    '"\r\n'
+  );
+}
+
+/**
+ * Build the file names used for the helper script and its batch launcher.
+ *
+ * @param {string} tempDir
+ * @param {number} [pid]
+ * @returns {{ scriptPath: string, batchPath: string }}
+ */
+function buildHelperPaths(tempDir, pid = process.pid) {
+  const base = `quick-pill-update-helper-${pid}`;
+  return {
+    scriptPath: path.join(tempDir, `${base}.ps1`),
+    batchPath: path.join(tempDir, `${base}.cmd`),
+  };
+}
+
 module.exports = {
   buildInstallScript,
   buildInstallCommand,
+  buildLauncherBatch,
+  buildHelperPaths,
   escapePowerShellLiteral,
   DEFAULT_WAIT_TIMEOUT_SECONDS,
   DEFAULT_INSTALL_TIMEOUT_SECONDS,

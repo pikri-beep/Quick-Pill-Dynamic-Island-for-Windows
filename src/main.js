@@ -78,7 +78,7 @@ const { createProgressEngine } = loadServiceModule("services/progress");
 const { createNotificationEngine, NOTIFICATION_ACTION_TYPES } = loadServiceModule("services/notifications");
 const { createLauncherEngine } = loadServiceModule("services/launcher");
 const { createNotesEngine } = loadServiceModule("services/notes");
-const { buildInstallCommand } = loadServiceModule("services/updater");
+const { buildInstallCommand, buildLauncherBatch, buildHelperPaths } = loadServiceModule("services/updater");
 
 
 
@@ -1952,6 +1952,7 @@ class AppUpdater extends EventEmitter {
 
         this.status = "available";
         this.emit("update-available", this.updateInfo);
+        logToFile(`[Auto-Updater] Update v${remoteVersion} is available (installed: v${this.currentVersion}).`);
 
         if (this.autoDownload && downloadUrl) {
           logToFile(`[Auto-Updater] New update v${remoteVersion} detected. Automatically downloading in background...`);
@@ -2148,7 +2149,9 @@ class AppUpdater extends EventEmitter {
         if (this.autoInstall) {
           logToFile(`[Auto-Updater] Update v${this.updateInfo.version} downloaded successfully. Automatically installing in background in 2 seconds...`);
           setTimeout(() => {
-            this.installAndRelaunch();
+            Promise.resolve(this.installAndRelaunch()).catch((err) => {
+              logToFile("[Auto-Updater] Automatic install failed:", err);
+            });
           }, 2000);
         }
       });
@@ -2172,7 +2175,7 @@ class AppUpdater extends EventEmitter {
     this.emit("download-cancelled");
   }
 
-  installAndRelaunch() {
+  async installAndRelaunch() {
     if (!this.downloadedFilePath || !fs.existsSync(this.downloadedFilePath)) {
       const err = new Error("No downloaded update file found to install.");
       logToFile("[Auto-Updater] " + err.message);
@@ -2204,6 +2207,7 @@ class AppUpdater extends EventEmitter {
     } catch (_) {}
 
     let command = null;
+    let helperPaths = null;
     try {
       command = buildInstallCommand({
         installerPath,
@@ -2211,6 +2215,9 @@ class AppUpdater extends EventEmitter {
         appExePath,
         logPath: getLogFilePath(),
       });
+      helperPaths = buildHelperPaths(app.getPath("temp"), currentPid);
+      fs.writeFileSync(helperPaths.scriptPath, command.script, "utf8");
+      fs.writeFileSync(helperPaths.batchPath, buildLauncherBatch(helperPaths.scriptPath), "utf8");
     } catch (err) {
       logToFile("[Auto-Updater] Failed to build install helper:", err);
       this.emit("error", `Failed to prepare the installer: ${err.message}`);
@@ -2220,22 +2227,37 @@ class AppUpdater extends EventEmitter {
     logToFile(`[Auto-Updater] Handing the update over to the installer helper (pid ${currentPid})`);
     logToFile(`[Auto-Updater] Installer: ${installerPath}`);
 
+    // The helper has to outlive this process. A directly spawned child would
+    // end up in the Electron job object, which kills every child as soon as
+    // the app quits — so the helper is started through the Windows shell.
+    let helperStarted = false;
     try {
-      // Detached helper: it waits for this process to exit, installs silently
-      // and starts the new version afterwards.
-      const child = spawn(command.command, command.args, {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      child.on("error", (err) => {
-        logToFile("[Auto-Updater] Installer helper failed to start:", err);
-      });
-      child.unref();
+      const openError = await shell.openPath(helperPaths.batchPath);
+      helperStarted = !openError;
+      if (openError) {
+        logToFile(`[Auto-Updater] shell.openPath reported: ${openError}`);
+      }
     } catch (err) {
-      logToFile("[Auto-Updater] Failed to launch the installer helper:", err);
-      this.emit("error", `Failed to launch the installer: ${err.message}`);
-      return false;
+      logToFile("[Auto-Updater] Failed to start the installer helper through the shell:", err);
+    }
+
+    if (!helperStarted) {
+      // Fallback: a plain detached spawn (works while the app is still up).
+      try {
+        const child = spawn(command.command, command.args, {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        });
+        child.on("error", (err) => {
+          logToFile("[Auto-Updater] Installer helper failed to start:", err);
+        });
+        child.unref();
+      } catch (err) {
+        logToFile("[Auto-Updater] Failed to launch the installer helper:", err);
+        this.emit("error", `Failed to launch the installer: ${err.message}`);
+        return false;
+      }
     }
 
     // Quit so the installer can take over the installation folder.

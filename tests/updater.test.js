@@ -4,6 +4,8 @@ const assert = require("node:assert");
 const {
   buildInstallScript,
   buildInstallCommand,
+  buildLauncherBatch,
+  buildHelperPaths,
   escapePowerShellLiteral,
 } = require("../src/services/updater");
 
@@ -66,4 +68,26 @@ test("updater - command targets powershell with a hidden window", () => {
 
 test("updater - requires an installer path", () => {
   assert.throws(() => buildInstallScript({}), /installerPath/);
+});
+
+test("updater - batch launcher runs the helper script hidden", () => {
+  const batch = buildLauncherBatch("C:\\Temp\\quick-pill-update-helper-42.ps1");
+  assert.ok(batch.startsWith("@echo off"));
+  assert.ok(batch.includes("powershell.exe"));
+  assert.ok(batch.includes("-ExecutionPolicy Bypass"));
+  assert.ok(batch.includes("-WindowStyle Hidden"));
+  assert.ok(batch.includes("-File \"C:\\Temp\\quick-pill-update-helper-42.ps1\""));
+});
+
+test("updater - batch launcher requires a script path", () => {
+  assert.throws(() => buildLauncherBatch(""), /scriptPath/);
+});
+
+test("updater - helper paths are unique per process", () => {
+  const paths = buildHelperPaths("C:\\Temp", 1234);
+  assert.strictEqual(paths.scriptPath, "C:\\Temp\\quick-pill-update-helper-1234.ps1");
+  assert.strictEqual(paths.batchPath, "C:\\Temp\\quick-pill-update-helper-1234.cmd");
+
+  const other = buildHelperPaths("C:\\Temp", 4321);
+  assert.notStrictEqual(other.scriptPath, paths.scriptPath);
 });

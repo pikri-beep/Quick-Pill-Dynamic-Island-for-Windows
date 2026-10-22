@@ -1,21 +1,20 @@
 {
-  "version": "5.5.5",
-  "name": "Quick Pill 5.5.5",
+  "version": "5.5.6",
+  "name": "Quick Pill 5.5.6",
   "releaseDate": "2026-10-22",
   "mandatory": false,
   "minSupportedVersion": "4.0.0",
   "changelog": [
-    "Feature: Removed the Caps Lock / Num Lock alert feature - the notch no longer pops up a key lock toast.",
-    "Fix: The notch no longer opens and closes again while the cursor rests on it - hover is now detected natively (cursor position vs. the notch hitbox) instead of through unreliable forwarded mouse events.",
-    "Fix: Removed the duplicated CSS transition on the notch, which fought the Framer Motion animation and made the rendered hit-box lag behind the cursor.",
-    "Fix: Hover needs a short settle time before the notch opens, and the notch only collapses once the cursor really left it.",
-    "Polish: The micro notch strip got a larger hover target so it can actually be grabbed, and HUD toasts no longer collapse an already expanded notch."
+    "Fix: The auto-updater now really installs the update. The installer helper was started as a child of Quick Pill, so Windows killed it together with the app - it is now started through the Windows shell and survives the restart.",
+    "Fix: The installer helper waits for Quick Pill to fully exit, releases the audio helper lock, installs silently and starts the new version again.",
+    "Fix: The update detection is written to quick-pill.log so a pending update is visible even when the automatic download is disabled.",
+    "Note: Updates released before v5.5.6 have to be installed once manually (run the downloaded Setup.exe), after that the in-app updater works again."
   ],
   "platforms": {
     "win32-x64": {
-      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.5/QuickPill-Windows-v5.5.5-Setup.exe",
-      "sha256": "20936087475d563bc56d48c8f85b5381b6644b6b991086878a0b45d3f0f91b8f",
-      "size": 135830269,
+      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.6/QuickPill-Windows-v5.5.6-Setup.exe",
+      "sha256": "f7052036a694d37be14dec9e816de4eb28417aa3632a4fb4d0de20542920cf2e",
+      "size": 135831410,
       "installerType": "nsis"
     }
   }
