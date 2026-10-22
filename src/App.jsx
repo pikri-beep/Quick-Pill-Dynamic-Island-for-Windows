@@ -1,3 +1,4 @@
+import './services/bridge.js';
 import { createRoot } from 'react-dom/client';
 import Island from './Island';
 import SettingsWindow from './components/SettingsWindow';

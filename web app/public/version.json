@@ -1,22 +1,22 @@
 {
-  "version": "5.5.3",
-  "name": "Quick Pill 5.5.3",
-  "releaseDate": "2026-10-21",
+  "version": "5.5.4",
+  "name": "Quick Pill 5.5.4",
+  "releaseDate": "2026-10-22",
   "mandatory": false,
   "minSupportedVersion": "4.0.0",
   "changelog": [
-    "Fix: Prevent file duplication on outbound drag in File Shelf.",
-    "Fix: Suppress Caps Lock / OSD overlay while notch is expanded.",
-    "Feature: Merged Browser Search into App Launcher with auto-focus.",
-    "Feature: Keep-Open Lock — notch stays expanded while JARVIS is loading or input is focused.",
-    "Polish: Auto-focus inputs across To-Do List, Ask AI, Quick Notes, and Spotlight Launcher."
+    "Feature: Dust dissolve animation — deleting a task, a quick note or a notification now crumbles the row into dust instead of blinking it away.",
+    "Feature: iOS-style notification chime — a soft two-note bell for incoming notifications with 5 selectable presets, a master toggle and a volume slider (Settings → Sound & Alerts).",
+    "Fix: Auto-updater now waits until Quick Pill fully exits before the installer runs, installs silently and relaunches the new version — the app no longer stays open after an update.",
+    "Fix: Failed downloads no longer report a successful installation, and the update manifest is fetched from the release repository that actually hosts the installer.",
+    "Polish: Notification sound and dust effects are enabled for the Electron build with a relaxed autoplay policy so the chime always plays."
   ],
   "platforms": {
     "win32-x64": {
-      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.3/QuickPill-Windows-v5.5.3-Setup.exe",
-      "sha256": "5a3a311260e2f9904a1a9701a8099b050735618e32b776363cf1df0f986730af",
-      "size": 135783907,
-      "installerType": "squirrel"
+      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.4/QuickPill-Windows-v5.5.4-Setup.exe",
+      "sha256": "fc2ab232f0158ba3b688e3dd17f4b2f5edad038dc2f1706681b2cc9c4835bac5",
+      "size": 135827183,
+      "installerType": "nsis"
     }
   }
 }

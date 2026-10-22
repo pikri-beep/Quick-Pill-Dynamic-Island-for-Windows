@@ -18,6 +18,7 @@ import {
   CheckSquare,
   X
 } from "lucide-react";
+import { dissolveElement, DUST_DISSOLVE_MS } from "../services/dust/dustBurst";
 
 export default function QuickNotes({
   onTaskCreated,
@@ -242,17 +243,27 @@ export default function QuickNotes({
       setDraftContent("");
       setDraftSaveStatus("saved");
     }
-    setNotes(prev => prev.filter(n => n.id !== noteId));
-    try {
-      const cached = localStorage.getItem("quick_pill_notes_cache");
-      if (cached) {
-        const list = JSON.parse(cached).filter(n => n.id !== noteId);
-        localStorage.setItem("quick_pill_notes_cache", JSON.stringify(list));
-      }
-    } catch (_) {}
-    if (window.electronAPI?.notes?.deleteNote) {
-      window.electronAPI.notes.deleteNote(noteId).catch(() => {});
+
+    // Dust dissolve: the note row crumbles into dust before it is removed
+    const row = e?.currentTarget?.closest?.(".note-item-row");
+    if (row) {
+      dissolveElement(row, { particleCount: 16 });
     }
+
+    // Keep the row mounted until the dissolve animation finished
+    window.setTimeout(() => {
+      setNotes(prev => prev.filter(n => n.id !== noteId));
+      try {
+        const cached = localStorage.getItem("quick_pill_notes_cache");
+        if (cached) {
+          const list = JSON.parse(cached).filter(n => n.id !== noteId);
+          localStorage.setItem("quick_pill_notes_cache", JSON.stringify(list));
+        }
+      } catch (_) {}
+      if (window.electronAPI?.notes?.deleteNote) {
+        window.electronAPI.notes.deleteNote(noteId).catch(() => {});
+      }
+    }, Math.max(0, DUST_DISSOLVE_MS - 40));
   }, [activeEditingNoteId]);
 
   // Handle Save Note (Commit)

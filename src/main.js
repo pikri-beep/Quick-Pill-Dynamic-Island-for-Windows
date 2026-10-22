@@ -18,6 +18,8 @@ const {
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
+// Allow the notification chime (Web Audio) to play without a user gesture in the always-on-top overlay
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 // Ensure single instance lock so running Quick Pill again restores the existing instance
 const gotTheLock = app.requestSingleInstanceLock();
@@ -76,6 +78,7 @@ const { createProgressEngine } = loadServiceModule("services/progress");
 const { createNotificationEngine, NOTIFICATION_ACTION_TYPES } = loadServiceModule("services/notifications");
 const { createLauncherEngine } = loadServiceModule("services/launcher");
 const { createNotesEngine } = loadServiceModule("services/notes");
+const { buildInstallCommand } = loadServiceModule("services/updater");
 
 
 
@@ -1784,11 +1787,11 @@ function cleanLegacyStartupEntries() {
 }
 
 // --- Native Auto-Updater Engine ---
+// The first reachable manifest wins. The canonical one lives in the release
+// repository that also hosts the installer binaries.
 const DEFAULT_MANIFEST_URLS = [
   "https://raw.githubusercontent.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/main/web%20app/public/version.json",
-  "https://raw.githubusercontent.com/nabil24024004/Quick-Pill/main/web%20app/public/version.json",
-  "https://pub-ec47b1fa4cbf4c5ba82408a738fb69d3.r2.dev/version.json",
-  "https://raw.githubusercontent.com/nabil24024004/Ripple/main/web%20app/public/version.json"
+  "https://raw.githubusercontent.com/nabil24024004/Quick-Pill/main/web%20app/public/version.json"
 ];
 
 class AppUpdater extends EventEmitter {
@@ -2006,14 +2009,29 @@ class AppUpdater extends EventEmitter {
       let lastBytes = 0;
       let lastTime = Date.now();
       let currentSpeed = 0;
+      // Guards against a failed download still reporting success: the stream
+      // can emit "finish" even after the transfer was aborted.
+      let failed = false;
+
+      const failDownload = (err) => {
+        if (failed) return;
+        failed = true;
+        try {
+          fileStream.destroy();
+        } catch (_) {}
+        try {
+          if (fs.existsSync(targetFilePath)) fs.unlinkSync(targetFilePath);
+        } catch (_) {}
+        this.status = "error";
+        logToFile(`[Auto-Updater] ${err.message}`);
+        this.emit("error", err.message);
+        reject(err);
+      };
 
       const downloadWithRedirects = (currentUrl, maxRedirects = 5) => {
+        if (failed) return;
         if (maxRedirects <= 0) {
-          fileStream.close();
-          const err = new Error("Too many redirects while downloading update binary.");
-          this.status = "error";
-          this.emit("error", err.message);
-          return reject(err);
+          return failDownload(new Error("Too many redirects while downloading update binary."));
         }
 
         const client = currentUrl.startsWith("https") ? https : http;
@@ -2025,20 +2043,22 @@ class AppUpdater extends EventEmitter {
             },
           },
           (res) => {
+            if (failed) {
+              res.resume();
+              return;
+            }
+
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              // Drain the redirect body so the socket can be reused
+              res.resume();
               const redirectUrl = new URL(res.headers.location, currentUrl).href;
               return downloadWithRedirects(redirectUrl, maxRedirects - 1);
             }
 
             if (res.statusCode !== 200) {
-              fileStream.close();
-              try {
-                fs.unlinkSync(targetFilePath);
-              } catch (_) {}
-              const err = new Error(`Download failed with status HTTP ${res.statusCode}: ${res.statusMessage}`);
-              this.status = "error";
-              this.emit("error", err.message);
-              return reject(err);
+              return failDownload(
+                new Error(`Download failed with status HTTP ${res.statusCode}: ${res.statusMessage}`)
+              );
             }
 
             const contentLength = parseInt(res.headers["content-length"], 10);
@@ -2075,17 +2095,12 @@ class AppUpdater extends EventEmitter {
             });
 
             res.on("end", () => {
+              if (failed) return;
               fileStream.end();
             });
 
             res.on("error", (err) => {
-              fileStream.close();
-              try {
-                fs.unlinkSync(targetFilePath);
-              } catch (_) {}
-              this.status = "error";
-              this.emit("error", err.message);
-              reject(err);
+              failDownload(err);
             });
           }
         );
@@ -2093,17 +2108,14 @@ class AppUpdater extends EventEmitter {
         this.currentDownloadRequest = req;
 
         req.on("error", (err) => {
-          fileStream.close();
-          try {
-            fs.unlinkSync(targetFilePath);
-          } catch (_) {}
-          this.status = "error";
-          this.emit("error", err.message);
-          reject(err);
+          failDownload(err);
         });
       };
 
       fileStream.on("finish", () => {
+        // A failed transfer must never be reported as a successful download
+        if (failed) return;
+
         this.currentDownloadRequest = null;
 
         if (this.updateInfo.sha256 && this.updateInfo.sha256.trim() !== "") {
@@ -2114,15 +2126,9 @@ class AppUpdater extends EventEmitter {
             const calculatedSha = hash.digest("hex");
 
             if (calculatedSha.toLowerCase() !== this.updateInfo.sha256.trim().toLowerCase()) {
-              try {
-                fs.unlinkSync(targetFilePath);
-              } catch (_) {}
-              const err = new Error(
-                "Integrity check failed (SHA-256 mismatch). The downloaded file might be corrupted."
+              return failDownload(
+                new Error("Integrity check failed (SHA-256 mismatch). The downloaded file might be corrupted.")
               );
-              this.status = "error";
-              this.emit("error", err.message);
-              return reject(err);
             }
           } catch (hashErr) {
             console.warn("Could not verify SHA-256 checksum:", hashErr);
@@ -2135,6 +2141,7 @@ class AppUpdater extends EventEmitter {
           version: this.updateInfo.version,
           filePath: targetFilePath,
         };
+        logToFile(`[Auto-Updater] Update v${this.updateInfo.version} downloaded successfully (${transferredBytes} bytes).`);
         this.emit("update-downloaded", downloadResult);
         resolve(downloadResult);
 
@@ -2147,12 +2154,7 @@ class AppUpdater extends EventEmitter {
       });
 
       fileStream.on("error", (err) => {
-        try {
-          fs.unlinkSync(targetFilePath);
-        } catch (_) {}
-        this.status = "error";
-        this.emit("error", err.message);
-        reject(err);
+        failDownload(err);
       });
 
       downloadWithRedirects(this.updateInfo.downloadUrl);
@@ -2173,39 +2175,87 @@ class AppUpdater extends EventEmitter {
   installAndRelaunch() {
     if (!this.downloadedFilePath || !fs.existsSync(this.downloadedFilePath)) {
       const err = new Error("No downloaded update file found to install.");
+      logToFile("[Auto-Updater] " + err.message);
       this.emit("error", err.message);
       return false;
     }
 
-    const filePath = this.downloadedFilePath;
+    if (app && app.isPackaged === false) {
+      const err = new Error("Automatic installation is only available for the packaged Quick Pill build.");
+      logToFile("[Auto-Updater] " + err.message);
+      this.emit("error", err.message);
+      return false;
+    }
+
+    const installerPath = this.downloadedFilePath;
+    const currentPid = process.pid;
+
+    let appExePath = "";
+    try {
+      appExePath = app.getPath("exe");
+    } catch (_) {}
+
+    // The audio helper lives inside the installation folder — it has to be
+    // stopped before the installer can replace the app files.
+    try {
+      if (typeof audioMixerManager !== "undefined" && audioMixerManager) {
+        audioMixerManager.stop();
+      }
+    } catch (_) {}
+
+    let command = null;
+    try {
+      command = buildInstallCommand({
+        installerPath,
+        currentPid,
+        appExePath,
+        logPath: getLogFilePath(),
+      });
+    } catch (err) {
+      logToFile("[Auto-Updater] Failed to build install helper:", err);
+      this.emit("error", `Failed to prepare the installer: ${err.message}`);
+      return false;
+    }
+
+    logToFile(`[Auto-Updater] Handing the update over to the installer helper (pid ${currentPid})`);
+    logToFile(`[Auto-Updater] Installer: ${installerPath}`);
 
     try {
-      // In Windows, spawn installer detached without depending on cmd timeout piping
-      spawn("powershell.exe", [
-        "-NoProfile",
-        "-WindowStyle",
-        "Hidden",
-        "-Command",
-        `Start-Sleep -Seconds 1; Start-Process -FilePath '${filePath.replace(/'/g, "''")}'`
-      ], {
+      // Detached helper: it waits for this process to exit, installs silently
+      // and starts the new version afterwards.
+      const child = spawn(command.command, command.args, {
         detached: true,
         stdio: "ignore",
         windowsHide: true,
-      }).unref();
+      });
+      child.on("error", (err) => {
+        logToFile("[Auto-Updater] Installer helper failed to start:", err);
+      });
+      child.unref();
+    } catch (err) {
+      logToFile("[Auto-Updater] Failed to launch the installer helper:", err);
+      this.emit("error", `Failed to launch the installer: ${err.message}`);
+      return false;
+    }
 
-      setTimeout(() => {
+    // Quit so the installer can take over the installation folder.
+    setTimeout(() => {
+      try {
         if (app) {
           app.isQuitting = true;
           app.quit();
-        } else {
-          process.exit(0);
         }
-      }, 400);
-      return true;
-    } catch (err) {
-      this.emit("error", `Failed to launch installer: ${err.message}`);
-      return false;
-    }
+      } catch (_) {}
+      // Safety net: make sure the process really dies so the installer is
+      // never blocked by a lingering lock on the app folder.
+      setTimeout(() => {
+        try {
+          process.exit(0);
+        } catch (_) {}
+      }, 1500);
+    }, 200);
+
+    return true;
   }
 }
 

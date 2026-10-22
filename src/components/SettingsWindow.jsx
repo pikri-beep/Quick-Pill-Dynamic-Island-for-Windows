@@ -1,13 +1,20 @@
-import React, { useState, useEffect } from 'react';
-import { 
+import React, { useState, useEffect, useCallback } from 'react';
+import {
   Settings, Palette, Sliders, Keyboard, Info, Check, X, Minus, 
   RotateCcw, Sparkles, Monitor, Bell, ExternalLink, ShieldAlert, Cpu,
   Music, Droplet, Clock, Timer, Inbox, BatteryCharging, SlidersHorizontal,
   Compass, FileText, CheckSquare, Calendar, Activity, List, Search,
   Trash2, Plus, ArrowUp, ArrowDown, Globe, Play, Bot, Zap, Power,
-  ChevronUp, ChevronDown, Download, RefreshCw, AlertCircle, CheckCircle2
+  ChevronUp, ChevronDown, Download, RefreshCw, AlertCircle, CheckCircle2,
+  Volume2
 } from 'lucide-react';
 import { DEFAULT_LAUNCHER_SHORTCUTS } from './AppLauncher';
+import {
+  SOUND_PRESETS,
+  getNotificationSoundSettings,
+  setNotificationSoundSettings,
+  previewNotificationSound
+} from '../services/audio/notificationSound';
 
 const MODULES_CONFIG = [
   { id: 2, name: "Standby Clock", desc: "Digital & analog clock with seconds and date display", icon: Clock, color: "#38bdf8" },
@@ -222,6 +229,10 @@ export default function SettingsWindow() {
   const [jarvisStatusDetails, setJarvisStatusDetails] = useState('');
   const [jarvisSavedFeedback, setJarvisSavedFeedback] = useState(false);
 
+  // Notification Sound Settings
+  const [soundSettings, setSoundSettings] = useState(() => getNotificationSoundSettings());
+  const [soundPreviewing, setSoundPreviewing] = useState(null);
+
   // App version & Auto-updater
   const [appVersion, setAppVersion] = useState('5.5.1');
   const [updateStatus, setUpdateStatus] = useState('idle'); // 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -230,6 +241,29 @@ export default function SettingsWindow() {
   const [updateError, setUpdateError] = useState('');
   const [autoDownloadInstall, setAutoDownloadInstall] = useState(true);
   const [desktopShortcutStatus, setDesktopShortcutStatus] = useState(null); // null | 'created' | 'error'
+
+  // Notification sound handlers
+  const handleToggleNotificationSound = useCallback((enabled) => {
+    setSoundSettings(setNotificationSoundSettings({ enabled }));
+  }, []);
+
+  const handleSelectSoundPreset = useCallback((presetId) => {
+    setSoundSettings(setNotificationSoundSettings({ preset: presetId }));
+    setSoundPreviewing(presetId);
+    previewNotificationSound(presetId);
+    setTimeout(() => setSoundPreviewing((current) => (current === presetId ? null : current)), 900);
+  }, []);
+
+  const handleChangeSoundVolume = useCallback((value) => {
+    const volume = Math.min(1, Math.max(0, value / 100));
+    setSoundSettings(setNotificationSoundSettings({ volume }));
+  }, []);
+
+  const handleTestSound = useCallback(() => {
+    setSoundPreviewing('test');
+    previewNotificationSound(soundSettings.preset);
+    setTimeout(() => setSoundPreviewing((current) => (current === 'test' ? null : current)), 900);
+  }, [soundSettings.preset]);
 
   useEffect(() => {
     const safeRead = async (apiFn, setter) => {
@@ -629,9 +663,19 @@ export default function SettingsWindow() {
     }
   };
 
-  const handleInstallUpdate = () => {
-    if (window.electronAPI?.installUpdate) {
-      window.electronAPI.installUpdate();
+  const handleInstallUpdate = async () => {
+    setUpdateError('');
+    try {
+      if (!window.electronAPI?.installUpdate) {
+        setUpdateError('Installer tidak tersedia pada build ini.');
+        return;
+      }
+      const started = await window.electronAPI.installUpdate();
+      if (started === false) {
+        setUpdateError('Gagal memulai instalasi. Silakan jalankan installer yang sudah diunduh secara manual.');
+      }
+    } catch (err) {
+      setUpdateError('Gagal memulai instalasi: ' + (err?.message || 'Unknown error'));
     }
   };
 
@@ -942,6 +986,7 @@ export default function SettingsWindow() {
         }}>
           {[
             { id: 'general', label: 'General', icon: Settings },
+            { id: 'sound', label: 'Sound & Alerts', icon: Volume2 },
             { id: 'appearance', label: 'Appearance', icon: Palette },
             { id: 'smart', label: 'Smart Behavior', icon: Sparkles },
             { id: 'modules', label: 'Modules', icon: Sliders },
@@ -1107,6 +1152,115 @@ export default function SettingsWindow() {
                       °{unit.toUpperCase()}
                     </button>
                   ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeNav === 'sound' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div>
+                <h2 style={{ fontSize: 16, fontWeight: 800, margin: '0 0 4px 0', color: '#ffffff' }}>Sound & Alerts</h2>
+                <p style={{ fontSize: 12, color: '#9ca3af', margin: 0 }}>Tune the chime that plays when a notification arrives</p>
+              </div>
+
+              <div style={{ background: '#1c1c1f', borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                <SettingRow
+                  title="Notification Sound"
+                  desc="Play an iPhone-style chime whenever a new notification arrives"
+                  checked={soundSettings.enabled}
+                  onChange={handleToggleNotificationSound}
+                />
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '12px 16px',
+                  borderTop: '1px solid rgba(255, 255, 255, 0.05)'
+                }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#ffffff' }}>Volume</span>
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>{Math.round(soundSettings.volume * 100)}% output level</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={Math.round(soundSettings.volume * 100)}
+                    onChange={(e) => handleChangeSoundVolume(Number(e.target.value))}
+                    style={{ width: 170, accentColor: '#38bdf8', cursor: 'pointer' }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ background: '#1c1c1f', borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#ffffff' }}>Chime Style</span>
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>Click a tone to hear it instantly</span>
+                  </div>
+                  <button
+                    onClick={handleTestSound}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '6px 12px',
+                      borderRadius: 8,
+                      border: '1px solid rgba(56, 189, 248, 0.3)',
+                      background: 'rgba(56, 189, 248, 0.12)',
+                      color: '#38bdf8',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <Volume2 size={13} />
+                    <span>{soundPreviewing === 'test' ? 'Playing…' : 'Test Sound'}</span>
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {SOUND_PRESETS.map((preset) => {
+                    const isActive = soundSettings.preset === preset.id;
+                    const isPlaying = soundPreviewing === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        onClick={() => handleSelectSoundPreset(preset.id)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                          padding: '9px 12px',
+                          borderRadius: 9,
+                          border: `1px solid ${isActive ? 'rgba(56, 189, 248, 0.45)' : 'rgba(255,255,255,0.06)'}`,
+                          background: isActive ? 'rgba(56, 189, 248, 0.12)' : 'rgba(255,255,255,0.03)',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: isActive ? '#38bdf8' : '#ffffff' }}>
+                            {preset.name}
+                          </span>
+                          <span style={{ fontSize: 10.5, color: '#9ca3af' }}>{preset.description}</span>
+                        </div>
+                        <span style={{
+                          fontSize: 9.5,
+                          fontWeight: 700,
+                          color: isPlaying ? '#22c55e' : isActive ? '#38bdf8' : 'rgba(255,255,255,0.3)',
+                          flexShrink: 0
+                        }}>
+                          {isPlaying ? 'Playing…' : isActive ? 'Active' : ''}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -2483,6 +2637,12 @@ export default function SettingsWindow() {
                         <span>Restart & Pasang Sekarang</span>
                       </button>
                     </div>
+
+                    {updateError && (
+                      <div style={{ fontSize: 11, color: '#f87171', lineHeight: 1.4 }}>
+                        {updateError}
+                      </div>
+                    )}
                   </div>
                 )}
 

@@ -8,6 +8,8 @@ import MascotStandbyHub from "./components/MascotStandbyHub";
 import CalendarModule from "./components/CalendarModule";
 import AskAI from "./components/AskAI";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { dissolveElement, spawnDustBurst } from "./services/dust/dustBurst";
+import { playNotificationSound, playCallSound } from "./services/audio/notificationSound";
 
 // Helper parse synced LRC format lyrics
 function parseLrc(lrcText) {
@@ -2017,14 +2019,8 @@ export default function Island() {
   const ctrlHeldRef = useRef(false);
   const lastIgnoreRef = useRef({ ignore: true, forward: true });
 
-  const updateMouseIgnore = useCallback((ignore, forward = true) => {
-    if (lastIgnoreRef.current?.ignore === ignore && lastIgnoreRef.current?.forward === forward) {
-      return;
-    }
-    lastIgnoreRef.current = { ignore, forward };
-    if (window.electronAPI?.setIgnoreMouseEvents) {
-      window.electronAPI.setIgnoreMouseEvents(ignore, forward);
-    }
+  const updateMouseIgnore = useCallback((_ignore, _forward = true) => {
+    // In Tauri v2, hit-testing is handled natively by the Rust background watcher
   }, []);
 
   const setHoverState = useCallback((val) => {
@@ -2317,7 +2313,7 @@ export default function Island() {
   useEffect(() => {
     if (!window.electronAPI?.onObstructionStatus) return;
     const unsub = window.electronAPI.onObstructionStatus((data) => {
-      const nextObstructed = Boolean(data?.isObstructed);
+      const nextObstructed = Boolean(data?.isObstructed ?? data?.obstructed);
       setIsObstructed(nextObstructed);
       if (!nextObstructed) {
         setForceReveal(false);
@@ -2325,6 +2321,39 @@ export default function Island() {
     });
     return () => unsub?.();
   }, []);
+
+  // Native Rust Win32 Cursor Hit-Test Hover Integration
+  useEffect(() => {
+    const unsubs = [];
+    if (window.electronAPI?.onNotchCursorEnter) {
+      unsubs.push(window.electronAPI.onNotchCursorEnter(() => {
+        if (mouseLeaveTimer.current) {
+          clearTimeout(mouseLeaveTimer.current);
+          mouseLeaveTimer.current = null;
+        }
+        setHoverState(true);
+        setMode("large");
+      }));
+    }
+    if (window.electronAPI?.onNotchCursorLeave) {
+      unsubs.push(window.electronAPI.onNotchCursorLeave(() => {
+        if (isDraggingRef.current) return;
+        const activeEl = document.activeElement;
+        const activeTag = activeEl?.tagName;
+        const isInputFocused = (activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT");
+        const islandEl = document.getElementById("Island");
+        const isFocusInsideNotch = islandEl && activeEl && islandEl.contains(activeEl);
+
+        if (isJarvisLoading || (isInputFocused && isFocusInsideNotch) || isDragOverShelf) return;
+
+        setHoverState(false);
+        setMode("still");
+      }));
+    }
+    return () => {
+      unsubs.forEach(u => u?.());
+    };
+  }, [isJarvisLoading, isDragOverShelf, setHoverState]);
 
   useEffect(() => {
     if (window.electronAPI?.getSmartBrowserAvoidance) {
@@ -2464,6 +2493,9 @@ export default function Island() {
   const [notificationAlert, setNotificationAlert] = useState(null);
   const notificationAlertTimeout = useRef(null);
   const seenNotificationIds = useRef(new Set());
+  const lastCallIdRef = useRef(null);
+  // Notifications currently dissolving into dust (hidden until the registry confirms)
+  const [dismissingNotifIds, setDismissingNotifIds] = useState(() => new Set());
 
   // Auto-Updater State & Handlers
   const [appVersion, setAppVersion] = useState("5.1.0");
@@ -3211,7 +3243,7 @@ export default function Island() {
     const saved = localStorage.getItem("island-y");
     const num = Number(saved);
     if (saved !== null && !isNaN(num)) {
-      if (num === 20 || num === 6) return 0;
+      if (num === 20 || num === 6 || num <= 0) return 0;
       return Math.max(0, Math.min(1000, num));
     }
     return 0;
@@ -3461,6 +3493,16 @@ export default function Island() {
     };
   }, [handleToggleMinimalNotchForce]);
 
+  // Phase 4: Immediate Working Set Memory Trimming on Micro-Strip Idle
+  useEffect(() => {
+    if (isMicroMode && window.electronAPI?.trimMemory) {
+      const timer = setTimeout(() => {
+        window.electronAPI.trimMemory();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [isMicroMode]);
+
   // Multi-Stage Spring Shell Dimensions (Nusa Motion Reference Engine)
   // 1. micro-strip: 96px x 5px (radius 6px)
   // 2. idle-clock: 154px x 32px (radius 16px)
@@ -3509,7 +3551,23 @@ export default function Island() {
       ? 24
       : mode === "large"
         ? 28
-        : 16;
+        : 22;
+
+  // Synchronize dynamic interactive hitbox to native Rust Win32 watcher
+  useEffect(() => {
+    if (!window.electronAPI?.setNotchHitbox) return;
+
+    if (mode === "large") {
+      const w = isLyricsWide ? 520 : 450;
+      window.electronAPI.setNotchHitbox(w, 155, true);
+    } else if (isMicroMode) {
+      window.electronAPI.setNotchHitbox(110, 14, false);
+    } else if (isHudActive) {
+      window.electronAPI.setNotchHitbox(320, 68, false);
+    } else {
+      window.electronAPI.setNotchHitbox(175, 36, false);
+    }
+  }, [mode, isMicroMode, isHudActive, isLyricsWide]);
 
   useEffect(() => {
     if (window.electronAPI?.platform === 'win32') {
@@ -3558,7 +3616,7 @@ export default function Island() {
       "show-info-when-idle": "true",
       "hour-format": "12-hr",
       "island-x": "50",
-      "island-y": "6",
+      "island-y": "0",
       "bg-color": "#000000",
       "text-color": "#FFFFFF",
       "weather-unit": "c",
@@ -4400,8 +4458,14 @@ export default function Island() {
         setNotificationAlert(callAlert);
         setMode("quick");
         window.electronAPI?.invalidateWindow?.();
+        // Only chime once per call, not on every snapshot refresh
+        if (snapshot.incomingCall.id && lastCallIdRef.current !== snapshot.incomingCall.id) {
+          lastCallIdRef.current = snapshot.incomingCall.id;
+          playCallSound();
+        }
         return;
       }
+      lastCallIdRef.current = null;
 
       // Check for new notifications
       if (isFirstFetch) {
@@ -4426,6 +4490,8 @@ export default function Island() {
           });
           setMode("quick");
           window.electronAPI?.invalidateWindow?.();
+          // iOS-style notification chime
+          playNotificationSound();
           clearTimeout(notificationAlertTimeout.current);
           notificationAlertTimeout.current = setTimeout(() => {
             setNotificationAlert(null);
@@ -4555,6 +4621,14 @@ export default function Island() {
   }, [notificationSnapshot]);
 
   const handleClearAll = useCallback(async () => {
+    // Let the whole list crumble into dust before it disappears
+    const listArea = document.querySelector(".notif-scroll-area");
+    if (listArea) {
+      const rect = listArea.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        spawnDustBurst(rect, { particleCount: 42, duration: 760 });
+      }
+    }
     setNotificationSnapshot(prev => ({
       ...prev,
       active: [],
@@ -5223,9 +5297,10 @@ export default function Island() {
         overflow: "visible",
         fontFamily: theme === "win95" ? "w95" : "OpenRunde",
         borderTopLeftRadius: 0,
-        borderTopRightRadius: 0,
         border: theme === "win95" ? "2px solid rgb(254, 254, 254)" : islandBorderEnabled ? "1px solid rgba(255, 255, 255, 0.08)" : "none",
-        borderTop: "none",
+        borderTop: "none !important",
+        marginTop: 0,
+        paddingTop: 0,
         borderColor:
           theme === "win95"
             ? "#FFFFFF #808080 #808080 #FFFFFF"
@@ -6557,11 +6632,15 @@ export default function Island() {
 
                 {/* Tab 8: Ripple-Style Minimalist Single-Column To-Do List */}
                 {currentTab === 8 && (() => {
-                  const handleCheckTask = (task, idx) => {
+                  const handleCheckTask = (e, task, idx) => {
                     const taskId = (typeof task === 'object' && task.id) ? task.id : `task-${idx}`;
                     if (completingTaskIds.has(taskId)) return;
 
                     setCompletingTaskIds(prev => new Set(prev).add(taskId));
+
+                    // Dust dissolve: the task row crumbles into dust instead of vanishing
+                    const row = e?.currentTarget?.closest?.(".ripple-todo-row");
+                    if (row) dissolveElement(row, { particleCount: 20 });
 
                     setTimeout(() => {
                       setTasks(prev => {
@@ -6574,7 +6653,7 @@ export default function Island() {
                         next.delete(taskId);
                         return next;
                       });
-                    }, 200);
+                    }, 240);
                   };
 
                   const addNewTask = () => {
@@ -6631,10 +6710,7 @@ export default function Island() {
                                 <motion.div
                                   key={taskId}
                                   initial={{ opacity: 0, scale: 0.95 }}
-                                  animate={{
-                                    opacity: isCompleting ? 0 : 1,
-                                    scale: isCompleting ? 0.92 : 1
-                                  }}
+                                  animate={{ opacity: 1, scale: 1 }}
                                   exit={{ opacity: 0, scale: 0.92 }}
                                   transition={{ duration: 0.2 }}
                                   className="ripple-todo-row"
@@ -6652,7 +6728,7 @@ export default function Island() {
                                 >
                                   {/* Rounded square checkbox: 16x16, border-radius: 5px, border: 1.5px solid rgba(255,255,255,0.4) */}
                                   <div
-                                    onClick={() => handleCheckTask(task, idx)}
+                                    onClick={(e) => handleCheckTask(e, task, idx)}
                                     style={{
                                       width: 16,
                                       height: 16,
@@ -6979,7 +7055,11 @@ export default function Island() {
                   const rawList = Array.isArray(notificationSnapshot?.active) && notificationSnapshot.active.length > 0 
                     ? notificationSnapshot.active 
                     : (Array.isArray(notificationsList) ? notificationsList : []);
-                  const activeList = rawList.filter(Boolean);
+                  const activeList = rawList.filter(Boolean).filter((n) => {
+                    // Hide rows that are currently dissolving into dust
+                    const key = n.id || n.sourceNotificationId;
+                    return key ? !dismissingNotifIds.has(key) : true;
+                  });
                   const activeCount = notificationSnapshot?.stats?.totalActive || activeList.length;
 
                   return (
@@ -7201,6 +7281,24 @@ export default function Island() {
                                     title="Dismiss notification"
                                     onClick={(e) => {
                                       e.stopPropagation();
+                                      // Dust dissolve: the card crumbles before it leaves the list
+                                      const card = e.currentTarget.closest(".notif-item-card");
+                                      if (card) dissolveElement(card, { particleCount: 18 });
+                                      if (nId) {
+                                        setDismissingNotifIds(prev => {
+                                          const next = new Set(prev);
+                                          next.add(nId);
+                                          return next;
+                                        });
+                                        // Release the lock in case the notification survives the dismiss
+                                        window.setTimeout(() => {
+                                          setDismissingNotifIds(prev => {
+                                            const next = new Set(prev);
+                                            next.delete(nId);
+                                            return next;
+                                          });
+                                        }, 3000);
+                                      }
                                       handleExecuteAction(nId, 'dismiss');
                                     }}
                                     className="notif-dismiss-btn"

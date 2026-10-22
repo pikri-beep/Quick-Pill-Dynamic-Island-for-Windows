@@ -1,10 +1,16 @@
-FEATURE
-- [x] cara membuka quickpill jika tertutup (System Tray click/double-click, menu "Show Quick Pill", single-instance reopen focus, dan Alt+Shift+M hotkey)
-- [x] tambahkan shortcut didekstop (Tersedia tombol "Buat Shortcut di Desktop" di General Settings yang langsung membuat Quick Pill.lnk)
+FEATURE 
+- [x] Terapkan efek dust disappear saat menghapus task, todo, notifikasi di electron (quick pill utama bukan tauri)
+- [x] Terapkan suara notifikasi ala iphone saat notifikasi aktif di electron (quick pill utama bukan tauri)
+
+BUGS
+- [x] update di setting tidak bekerja, saat disuruh restart. aplikasi tidak menjalankan ulang, Saat direstart manual pun tidak terupdate
+    - Installer kini dijalankan helper PowerShell terpisah: tunggu proses Quick Pill benar-benar keluar, lepas lock (audio-helper), install diam, lalu relaunch versi baru.
+    - Download gagal (404/hash rusak) tidak lagi dilaporkan "berhasil" sehingga tidak mencoba install file yang sudah dihapus.
+    - Manifest update diambil dari repo rilis (R2 yang sertifikatnya kedaluwarsa dibuang).
 
 
-BUGS 
-- [x] saat item di shelf ditarik keluar, ia malah forceclose dan menutup quickpill (Fixed: e.preventDefault() pada DOM drag event dan validasi fallback image non-empty pada native startDrag)
+ALWAYS DO
+- [x] push ke github ke branch main agar trigger update
 
 
 Next Time

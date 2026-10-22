@@ -20,6 +20,12 @@ const DIST_DIR = path.resolve(__dirname, '../dist');
 const OUT_MAKE_DIR = path.resolve(__dirname, '../out/make');
 const WEB_APP_PUBLIC_DIR = path.resolve(__dirname, '../web app/public');
 
+// The published installer lives in the GitHub release of the same tag — the
+// updater downloads it from there.
+const RELEASE_REPO = process.env.QP_RELEASE_REPO || 'pikri-beep/Quick-Pill-Dynamic-Island-for-Windows';
+const RELEASE_URL = (version, fileName) =>
+  `https://github.com/${RELEASE_REPO}/releases/download/v${version}/${fileName}`;
+
 function calculateFileSha256(filePath) {
   if (!fs.existsSync(filePath)) return null;
   const hash = crypto.createHash('sha256');
@@ -33,18 +39,31 @@ function getFileSize(filePath) {
   return fs.statSync(filePath).size;
 }
 
-function findArtifact(searchDirs, pattern) {
+function findArtifact(searchDirs, pattern, preferredPattern = null) {
+  const matches = [];
+
   for (const dir of searchDirs) {
     if (!fs.existsSync(dir)) continue;
     const files = fs.readdirSync(dir, { recursive: true });
     for (const file of files) {
       const fullPath = path.isAbsolute(file) ? file : path.join(dir, file);
       if (typeof file === 'string' && pattern.test(file) && fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-        return fullPath;
+        matches.push(fullPath);
       }
     }
   }
-  return null;
+
+  if (!matches.length) return null;
+
+  // Always prefer the artifact that belongs to the current version — otherwise
+  // an installer from a previous release could end up in the manifest.
+  if (preferredPattern) {
+    const preferred = matches.find((file) => preferredPattern.test(path.basename(file)));
+    if (preferred) return preferred;
+  }
+
+  // Fall back to the newest artifact
+  return matches.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
 }
 
 function generateManifest() {
@@ -53,10 +72,13 @@ function generateManifest() {
 
   const searchDirs = [DIST_DIR, OUT_MAKE_DIR];
 
-  // Look for Windows installer
-  const winArtifact = findArtifact(searchDirs, /Quick.*Pill.*Setup.*\.exe$/i) ||
-                      findArtifact(searchDirs, /QuickPill-Windows.*\.exe$/i) ||
-                      findArtifact(searchDirs, /quick-pill-.*-setup\.exe$/i);
+  // Look for Windows installer (prefer the one of the current version)
+  const currentArtifactPattern = new RegExp(`v${version}.*\\.exe$`, 'i');
+  const winArtifact = findArtifact(searchDirs, /Quick.*Pill.*Setup.*\.exe$/i, currentArtifactPattern) ||
+                      findArtifact(searchDirs, /QuickPill-Windows.*\.exe$/i, currentArtifactPattern) ||
+                      findArtifact(searchDirs, /quick-pill-.*-setup\.exe$/i, currentArtifactPattern);
+
+  const artifactName = winArtifact ? path.basename(winArtifact) : `QuickPill-Windows-v${version}-Setup.exe`;
 
   const manifest = {
     version: version,
@@ -70,7 +92,7 @@ function generateManifest() {
     ],
     platforms: {
       'win32-x64': {
-        url: `https://pub-ec47b1fa4cbf4c5ba82408a738fb69d3.r2.dev/QuickPill-Windows-v${version}-Setup.exe`,
+        url: RELEASE_URL(version, artifactName),
         sha256: winArtifact ? calculateFileSha256(winArtifact) : '',
         size: winArtifact ? getFileSize(winArtifact) : 89452012,
         installerType: 'nsis'
@@ -78,12 +100,12 @@ function generateManifest() {
     }
   };
 
-  // Preserve existing changelog if version.json exists in web app/public
+  // Preserve the hand written changelog of the previous release
   const publicManifestPath = path.join(WEB_APP_PUBLIC_DIR, 'version.json');
   if (fs.existsSync(publicManifestPath)) {
     try {
       const existing = JSON.parse(fs.readFileSync(publicManifestPath, 'utf8'));
-      if (existing.version === version && existing.changelog) {
+      if (Array.isArray(existing.changelog) && existing.changelog.length > 0) {
         manifest.changelog = existing.changelog;
       }
     } catch (_) {}

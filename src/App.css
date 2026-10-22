@@ -94,12 +94,15 @@ body {
 }
 
 #Island,
-.notch-shell {
+.notch-shell,
+.island-wrapper {
   position: absolute;
-  top: 0;
+  top: 0 !important;
   left: 50%;
   transform: translateX(-50%);
   margin: 0 auto;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
   z-index: 9999;
   scrollbar-width: none;
   -webkit-user-select: none;
@@ -110,6 +113,10 @@ body {
   transform-style: preserve-3d;
   background-color: #000000 !important;
   border-top: none !important;
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+  border-bottom-left-radius: 22px;
+  border-bottom-right-radius: 22px;
   transition: width 360ms cubic-bezier(0.16, 1, 0.3, 1), 
               height 360ms cubic-bezier(0.16, 1, 0.3, 1), 
               border-radius 360ms cubic-bezier(0.16, 1, 0.3, 1), 
@@ -1995,6 +2002,95 @@ label {
 .notif-header-btn:hover {
   background: rgba(255, 255, 255, 0.14) !important;
   border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+/* --- Dust Burst: iOS-style "crumble into dust" delete effect --- */
+.qp-dust-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 2147483600;
+}
+
+.qp-dust-particle {
+  position: absolute;
+  border-radius: 1px;
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: qp-dust-fly var(--qp-dur, 620ms) cubic-bezier(0.22, 0.61, 0.36, 1) var(--qp-delay, 0ms) forwards;
+}
+
+@keyframes qp-dust-fly {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+  10% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0.95;
+    transform: translate3d(calc(var(--qp-dx) * 0.55), calc(var(--qp-dy) * -0.18), 0) rotate(calc(var(--qp-rot) * 0.4)) scale(0.9);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--qp-dx), var(--qp-dy), 0) rotate(var(--qp-rot)) scale(0.12);
+  }
+}
+
+.qp-dust-puff {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.07) 45%, rgba(255, 255, 255, 0) 70%);
+  animation: qp-dust-puff 460ms ease-out forwards;
+}
+
+@keyframes qp-dust-puff {
+  0% {
+    opacity: 0.85;
+    transform: translate(-50%, -50%) scale(0.35);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.15);
+  }
+}
+
+.qp-dust-dissolve {
+  pointer-events: none !important;
+  animation: qp-dust-dissolve 280ms cubic-bezier(0.4, 0, 0.6, 1) forwards;
+}
+
+@keyframes qp-dust-dissolve {
+  0% {
+    opacity: 1;
+    filter: blur(0px) saturate(1);
+    transform: scale(1);
+  }
+  35% {
+    opacity: 0.85;
+    filter: blur(1.5px) saturate(0.7);
+    transform: scale(1.01);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(7px) saturate(0);
+    transform: scale(0.94);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qp-dust-particle,
+  .qp-dust-puff {
+    animation: none;
+    opacity: 0;
+  }
+  .qp-dust-dissolve {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 
