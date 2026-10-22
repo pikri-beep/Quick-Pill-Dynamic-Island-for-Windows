@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Camera, Mic, SkipBackIcon, Play, Pause, SkipForwardIcon, Music, Headphones, Zap, Settings, Sun, Cloud, Trash2, ChevronRight, ChevronLeft, Check, X, CloudRain, CloudSnow, CloudLightning, CloudSun, Moon, Eye, EyeOff, GripVertical, List, Search, Star, Calendar as CalendarIcon, Bell, BellOff, AlarmClock, Timer, Activity, Clock, Volume2, VolumeX, Wind, Usb, Download, RefreshCw, Sparkles, AlertCircle, CheckCircle2, SlidersHorizontal, Palette, Compass, Layers, Quote, Copy, Clipboard, Shuffle, BatteryCharging, Battery, ArrowDown, ArrowUp, ArrowLeft, FolderOpen, RotateCcw, FileText, CheckCircle, Upload, Film, Package, Phone, PhoneCall, PhoneIncoming, Send, MessageSquare, ExternalLink, Undo, ChevronDown, ChevronUp, BellRing, Keyboard, Droplet, Flame, Inbox, File, CheckSquare, Square, CornerDownLeft, Lock } from "lucide-react";
+import { Camera, Mic, SkipBackIcon, Play, Pause, SkipForwardIcon, Music, Headphones, Zap, Settings, Sun, Cloud, Trash2, ChevronRight, ChevronLeft, Check, X, CloudRain, CloudSnow, CloudLightning, CloudSun, Moon, Eye, EyeOff, GripVertical, List, Search, Star, Calendar as CalendarIcon, Bell, BellOff, AlarmClock, Timer, Activity, Clock, Volume2, VolumeX, Wind, Usb, Download, RefreshCw, Sparkles, AlertCircle, CheckCircle2, SlidersHorizontal, Palette, Compass, Layers, Quote, Copy, Clipboard, Shuffle, BatteryCharging, Battery, ArrowDown, ArrowLeft, FolderOpen, RotateCcw, FileText, CheckCircle, Upload, Film, Package, Phone, PhoneCall, PhoneIncoming, Send, MessageSquare, ExternalLink, Undo, ChevronDown, ChevronUp, BellRing, Keyboard, Droplet, Flame, Inbox, File, CheckSquare, Square, CornerDownLeft, Lock } from "lucide-react";
 import "./App.css";
 import AppLauncher from "./components/AppLauncher";
 import QuickNotes from "./components/QuickNotes";
@@ -10,6 +10,12 @@ import AskAI from "./components/AskAI";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { dissolveElement, spawnDustBurst } from "./services/dust/dustBurst";
 import { playNotificationSound, playCallSound } from "./services/audio/notificationSound";
+import {
+  HOVER_OPEN_DELAY_MS,
+  HOVER_CLOSE_DELAY_MS,
+  HOVER_EDGE_TOLERANCE_PX,
+  isPointerInsideRect,
+} from "./services/hover/hoverPolicy";
 
 // Helper parse synced LRC format lyrics
 function parseLrc(lrcText) {
@@ -2033,9 +2039,23 @@ export default function Island() {
     setCtrlHeld(val);
   }, []);
 
-  // Key Lock Alert State
-  const [keyLockAlert, setKeyLockAlert] = useState(null);
-  const keyLockAlertTimeout = useRef(null);
+  // --- Hover state machine helpers ---
+  // The notch resizes while the cursor is on it, so enter/leave events alone
+  // are not reliable. The pointer position is tracked and verified before the
+  // notch collapses, which stops the "opens and immediately closes" flicker.
+  const recordPointer = useCallback((e) => {
+    if (e && typeof e.clientX === "number") {
+      lastPointerRef.current = { x: e.clientX, y: e.clientY };
+    }
+  }, []);
+
+  const isPointerInsideIsland = useCallback((padding = 0) => {
+    const islandEl = document.getElementById("Island");
+    if (!islandEl) return false;
+    const { x, y } = lastPointerRef.current;
+    if (x < -9000) return false;
+    return isPointerInsideRect(islandEl.getBoundingClientRect(), { x, y }, padding);
+  }, []);
 
   // USB Device Alert State
   const [usbAlert, setUSBAlert] = useState(null);
@@ -2322,38 +2342,52 @@ export default function Island() {
     return () => unsub?.();
   }, []);
 
-  // Native Rust Win32 Cursor Hit-Test Hover Integration
+  // Native Cursor Hit-Test Hover Integration (Tauri Rust watcher + Electron twin)
   useEffect(() => {
     const unsubs = [];
     if (window.electronAPI?.onNotchCursorEnter) {
       unsubs.push(window.electronAPI.onNotchCursorEnter(() => {
+        nativeHoverRef.current = true;
         if (mouseLeaveTimer.current) {
           clearTimeout(mouseLeaveTimer.current);
           mouseLeaveTimer.current = null;
         }
         setHoverState(true);
-        setMode("large");
+        // Same hover intent as the DOM hover: the notch only opens when the
+        // cursor settles on it, which keeps it from reacting to every pass.
+        if (hoverIntentTimer.current) {
+          clearTimeout(hoverIntentTimer.current);
+          hoverIntentTimer.current = null;
+        }
+        hoverIntentTimer.current = setTimeout(() => {
+          hoverIntentTimer.current = null;
+          // The native hit-test already confirmed the cursor is on the notch.
+          setMode("large");
+        }, HOVER_OPEN_DELAY_MS);
       }));
     }
     if (window.electronAPI?.onNotchCursorLeave) {
       unsubs.push(window.electronAPI.onNotchCursorLeave(() => {
+        nativeHoverRef.current = false;
         if (isDraggingRef.current) return;
-        const activeEl = document.activeElement;
-        const activeTag = activeEl?.tagName;
-        const isInputFocused = (activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT");
-        const islandEl = document.getElementById("Island");
-        const isFocusInsideNotch = islandEl && activeEl && islandEl.contains(activeEl);
 
-        if (isJarvisLoading || (isInputFocused && isFocusInsideNotch) || isDragOverShelf) return;
+        // Cancel a pending open
+        if (hoverIntentTimer.current) {
+          clearTimeout(hoverIntentTimer.current);
+          hoverIntentTimer.current = null;
+        }
 
-        setHoverState(false);
-        setMode("still");
+        if (mouseLeaveTimer.current) clearTimeout(mouseLeaveTimer.current);
+        mouseLeaveTimer.current = setTimeout(() => {
+          mouseLeaveTimer.current = null;
+          collapseNotchRef.current();
+        }, HOVER_CLOSE_DELAY_MS);
       }));
     }
     return () => {
       unsubs.forEach(u => u?.());
     };
-  }, [isJarvisLoading, isDragOverShelf, setHoverState]);
+  }, [isPointerInsideIsland]);
 
   useEffect(() => {
     if (window.electronAPI?.getSmartBrowserAvoidance) {
@@ -3222,6 +3256,13 @@ export default function Island() {
   const isDraggingRef = useRef(false);
   const mouseLeaveTimer = useRef(null);
   const hoverIntentTimer = useRef(null);
+  // Last known cursor position — used to verify that the pointer really left
+  // the notch before it collapses (the island resizes under the cursor).
+  const lastPointerRef = useRef({ x: -9999, y: -9999 });
+  // Holds the latest collapse routine so early effects can call it safely.
+  const collapseNotchRef = useRef(() => {});
+  // True while the native cursor watcher reports the cursor on the notch.
+  const nativeHoverRef = useRef(false);
 
   const updateDragging = (val) => {
     isDraggingRef.current = val;
@@ -3458,8 +3499,10 @@ export default function Island() {
   };
 
   const isPlaying = spotifyTrack?.state === 'playing';
+  // A HUD toast must never take over the layout while the notch is expanded,
+  // otherwise the island resizes under the cursor and collapses again.
   const isHudActive = Boolean(
-    (activeHudToast && (activeHudToast.title || activeHudToast.type || activeHudToast.subtext)) ||
+    (mode !== "large" && activeHudToast && (activeHudToast.title || activeHudToast.type || activeHudToast.subtext)) ||
     (notificationAlert && mode !== "large" && (notificationAlert.title || notificationAlert.message || notificationAlert.appName || notificationAlert.body))
   );
   const effectiveObstructed = smartBrowserAvoidance && isObstructed;
@@ -3553,21 +3596,19 @@ export default function Island() {
         ? 28
         : 22;
 
-  // Synchronize dynamic interactive hitbox to native Rust Win32 watcher
+  // Synchronize dynamic interactive hitbox to the native cursor watcher
   useEffect(() => {
     if (!window.electronAPI?.setNotchHitbox) return;
-
-    if (mode === "large") {
-      const w = isLyricsWide ? 520 : 450;
-      window.electronAPI.setNotchHitbox(w, 155, true);
-    } else if (isMicroMode) {
-      window.electronAPI.setNotchHitbox(110, 14, false);
-    } else if (isHudActive) {
-      window.electronAPI.setNotchHitbox(320, 68, false);
-    } else {
-      window.electronAPI.setNotchHitbox(175, 36, false);
-    }
-  }, [mode, isMicroMode, isHudActive, isLyricsWide]);
+    const islandEl = document.getElementById("Island");
+    const rect = islandEl?.getBoundingClientRect();
+    // The anchor (horizontal centre) stays stable while the notch animates.
+    const anchorX = rect ? rect.left + rect.width / 2 : null;
+    // The micro strip is only a few pixels tall — give it a comfortable
+    // target so it can actually be hovered.
+    const hitWidth = isMicroMode ? Math.max(width, 110) : width;
+    const hitHeight = isMicroMode ? Math.max(height, 14) : height;
+    window.electronAPI.setNotchHitbox(hitWidth, hitHeight, mode === "large", anchorX);
+  }, [mode, isMicroMode, isHudActive, isLyricsWide, width, height]);
 
   useEffect(() => {
     if (window.electronAPI?.platform === 'win32') {
@@ -4370,32 +4411,6 @@ export default function Island() {
     return () => clearInterval(interval);
   }, [mode, currentTab]);
 
-  // Key Lock Alert Listener (NumLock & CapsLock - suppressed when notch is expanded)
-  useEffect(() => {
-    if (!window.electronAPI?.onKeyLockChange) return;
-    const cleanup = window.electronAPI.onKeyLockChange((data) => {
-      if (!data) return;
-      // If expanded in large mode, do not disrupt user typing with full-card Caps Lock overlay
-      if (mode === 'large') return;
-      setKeyLockAlert(data);
-      const isCaps = data.key === 'CapsLock';
-      triggerHudToast({
-        type: 'caps',
-        title: isCaps ? 'Caps Lock' : 'Num Lock',
-        state: data.state ? 'On' : 'Off',
-        icon: isCaps ? 'A' : '#'
-      });
-      clearTimeout(keyLockAlertTimeout.current);
-      keyLockAlertTimeout.current = setTimeout(() => {
-        setKeyLockAlert(null);
-      }, 2000);
-    });
-    return () => {
-      cleanup?.();
-      clearTimeout(keyLockAlertTimeout.current);
-    };
-  }, [mode, triggerHudToast]);
-
   // USB Device Alert Listener (push events from main process)
   useEffect(() => {
     if (!window.electronAPI?.onUSBChange) return;
@@ -4745,6 +4760,8 @@ export default function Island() {
     // Tracks whether mouse is inside island rect and whether Ctrl/Cmd is held
     let lastMoveTime = 0;
     const handleMouseMove = (e) => {
+      // Always track the cursor position (used to verify a real hover leave)
+      lastPointerRef.current = { x: e.clientX, y: e.clientY };
       const now = Date.now();
       if (now - lastMoveTime < 30) return;
       lastMoveTime = now;
@@ -5106,11 +5123,62 @@ export default function Island() {
                     : `color-mix(in srgb, ${textColor}, transparent 70%)`)
       : "none";
 
+  // Collapse the notch back to its idle state. Kept in one place so the
+  // hover handlers can re-check the cursor position before it is applied.
+  const collapseNotch = useCallback(() => {
+    const activeEl = document.activeElement;
+    const activeTag = activeEl?.tagName;
+    const isInputFocused = (activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT");
+    const islandEl = document.getElementById("Island");
+    const isFocusInsideNotch = islandEl && activeEl && islandEl.contains(activeEl);
+
+    // Keep notch expanded while JARVIS is responding, an input/textarea inside notch is focused, or shelf is active
+    if (isJarvisLoading || (isInputFocused && isFocusInsideNotch) || isDragOverShelf) return;
+
+    setHoverState(false);
+    updateMouseIgnore(true, true);
+
+    // If a notification alert is still active, resume the auto-dismiss countdown
+    if (notificationAlert) {
+      if (notificationAlertTimeout.current) clearTimeout(notificationAlertTimeout.current);
+      notificationAlertTimeout.current = setTimeout(() => {
+        setNotificationAlert(null);
+        if (standbyBorderEnabled) {
+          setMode("quick");
+        } else if (largeStandbyEnabled) {
+          setMode("large");
+        } else {
+          setMode("still");
+        }
+      }, 2000);
+      return;
+    }
+
+    if (standbyBorderEnabled) {
+      setMode("quick");
+    } else if (largeStandbyEnabled) {
+      setMode("large");
+    } else {
+      setMode("still");
+    }
+  }, [
+    isJarvisLoading,
+    isDragOverShelf,
+    notificationAlert,
+    standbyBorderEnabled,
+    largeStandbyEnabled,
+    setHoverState,
+    updateMouseIgnore,
+  ]);
+
+  collapseNotchRef.current = collapseNotch;
+
   return (
     <motion.div
       id="Island"
       className="notch-shell"
       onMouseEnter={(e) => {
+        recordPointer(e);
         if (mouseLeaveTimer.current) {
           clearTimeout(mouseLeaveTimer.current);
           mouseLeaveTimer.current = null;
@@ -5133,15 +5201,22 @@ export default function Island() {
             return;
           }
 
-          // Immediately expand on hover without intermediate blank delay state
+          // Hover intent: the cursor has to rest on the notch for a moment
+          // before it expands, so a quick brush past does not toggle it.
           if (hoverIntentTimer.current) {
             clearTimeout(hoverIntentTimer.current);
             hoverIntentTimer.current = null;
           }
-          setMode("large");
+          hoverIntentTimer.current = setTimeout(() => {
+            hoverIntentTimer.current = null;
+            // The browser already reported the enter event, so the notch opens
+            // once the cursor settled on it.
+            setMode("large");
+          }, HOVER_OPEN_DELAY_MS);
         }
       }}
       onMouseMove={(e) => {
+        recordPointer(e);
         if (e.buttons === 0) {
           if (isDragOverShelf) setIsDragOverShelf(false);
           isOutboundDragging.current = false;
@@ -5156,6 +5231,7 @@ export default function Island() {
         }
       }}
       onMouseLeave={(e) => {
+        recordPointer(e);
         if (e.buttons === 0) {
           setIsDragOverShelf(false);
           isOutboundDragging.current = false;
@@ -5165,6 +5241,11 @@ export default function Island() {
           setCtrlState(false);
         }
         if (isDraggingRef.current) return;
+
+        // The native cursor watcher owns the hover state — when it still sees
+        // the cursor on the notch this DOM leave event is just a stale edge
+        // case and must not collapse the island.
+        if (nativeHoverRef.current) return;
 
         // Cancel pending hover intent if mouse leaves before delay
         if (hoverIntentTimer.current) {
@@ -5176,42 +5257,20 @@ export default function Island() {
         mouseLeaveTimer.current = setTimeout(() => {
           mouseLeaveTimer.current = null;
 
-          const activeEl = document.activeElement;
-          const activeTag = activeEl?.tagName;
-          const isInputFocused = (activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT");
-          const islandEl = document.getElementById("Island");
-          const isFocusInsideNotch = islandEl && activeEl && islandEl.contains(activeEl);
-
-          // Keep notch expanded while JARVIS is responding, an input/textarea inside notch is focused, or shelf is active
-          if (isJarvisLoading || (isInputFocused && isFocusInsideNotch) || isDragOverShelf) return;
-
-          setHoverState(false);
-          updateMouseIgnore(true, true);
-
-          // If a notification alert is still active, resume the auto-dismiss countdown
-          if (notificationAlert) {
-            if (notificationAlertTimeout.current) clearTimeout(notificationAlertTimeout.current);
-            notificationAlertTimeout.current = setTimeout(() => {
-              setNotificationAlert(null);
-              if (standbyBorderEnabled) {
-                setMode("quick");
-              } else if (largeStandbyEnabled) {
-                setMode("large");
-              } else {
-                setMode("still");
-              }
-            }, 2000);
+          // The notch resizes while the cursor is on it, so the pointer can
+          // still be inside the island after a leave event. Only collapse when
+          // the cursor really left — otherwise the notch opens and closes
+          // again right away.
+          if (isPointerInsideIsland(HOVER_EDGE_TOLERANCE_PX)) {
+            mouseLeaveTimer.current = setTimeout(() => {
+              mouseLeaveTimer.current = null;
+              collapseNotch();
+            }, 120);
             return;
           }
 
-          if (standbyBorderEnabled) {
-            setMode("quick");
-          } else if (largeStandbyEnabled) {
-            setMode("large");
-          } else {
-            setMode("still");
-          }
-        }, 150);
+          collapseNotch();
+        }, HOVER_CLOSE_DELAY_MS);
       }}
       onClick={(e) => {
         if (ctrlHeldRef.current || e?.ctrlKey || e?.metaKey) {
@@ -5575,11 +5634,7 @@ export default function Island() {
                     color: '#ffffff',
                     flexShrink: 0
                   }}>
-                    {toastType === 'caps' ? (
-                      <ArrowUp size={16} color="#38bdf8" />
-                    ) : (
-                      <Bell size={16} color="#a855f7" />
-                    )}
+                    <Bell size={16} color="#a855f7" />
                   </div>
 
                   <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', padding: '0 12px', lineHeight: 1.2 }}>

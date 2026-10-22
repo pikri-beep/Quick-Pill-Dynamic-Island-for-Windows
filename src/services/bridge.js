@@ -179,7 +179,6 @@ export function initBridge() {
     dismissNotification: () => Promise.resolve(true),
     focusNotificationApp: () => Promise.resolve(true),
 
-    onKeyLockChange: (cb) => createTauriListener('key-lock-change', cb),
     onUSBChange: (cb) => createTauriListener('usb-change', cb),
 
     checkForUpdates: () => Promise.resolve({ updateAvailable: false }),

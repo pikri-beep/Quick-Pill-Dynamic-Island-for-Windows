@@ -117,11 +117,9 @@ body {
   border-top-right-radius: 0 !important;
   border-bottom-left-radius: 22px;
   border-bottom-right-radius: 22px;
-  transition: width 360ms cubic-bezier(0.16, 1, 0.3, 1), 
-              height 360ms cubic-bezier(0.16, 1, 0.3, 1), 
-              border-radius 360ms cubic-bezier(0.16, 1, 0.3, 1), 
-              box-shadow 360ms cubic-bezier(0.16, 1, 0.3, 1),
-              transform 360ms cubic-bezier(0.16, 1, 0.3, 1);
+  /* Framer Motion owns width/height/border-radius/box-shadow/transform for the
+     notch — a second CSS transition here made the rendered hit-box lag behind
+     the animation and caused the hover open/close flicker. */
 }
 
 .notch-shell::before {

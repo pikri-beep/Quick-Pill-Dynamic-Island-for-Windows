@@ -1,21 +1,21 @@
 {
-  "version": "5.5.4",
-  "name": "Quick Pill 5.5.4",
+  "version": "5.5.5",
+  "name": "Quick Pill 5.5.5",
   "releaseDate": "2026-10-22",
   "mandatory": false,
   "minSupportedVersion": "4.0.0",
   "changelog": [
-    "Feature: Dust dissolve animation — deleting a task, a quick note or a notification now crumbles the row into dust instead of blinking it away.",
-    "Feature: iOS-style notification chime — a soft two-note bell for incoming notifications with 5 selectable presets, a master toggle and a volume slider (Settings → Sound & Alerts).",
-    "Fix: Auto-updater now waits until Quick Pill fully exits before the installer runs, installs silently and relaunches the new version — the app no longer stays open after an update.",
-    "Fix: Failed downloads no longer report a successful installation, and the update manifest is fetched from the release repository that actually hosts the installer.",
-    "Polish: Notification sound and dust effects are enabled for the Electron build with a relaxed autoplay policy so the chime always plays."
+    "Feature: Removed the Caps Lock / Num Lock alert feature - the notch no longer pops up a key lock toast.",
+    "Fix: The notch no longer opens and closes again while the cursor rests on it - hover is now detected natively (cursor position vs. the notch hitbox) instead of through unreliable forwarded mouse events.",
+    "Fix: Removed the duplicated CSS transition on the notch, which fought the Framer Motion animation and made the rendered hit-box lag behind the cursor.",
+    "Fix: Hover needs a short settle time before the notch opens, and the notch only collapses once the cursor really left it.",
+    "Polish: The micro notch strip got a larger hover target so it can actually be grabbed, and HUD toasts no longer collapse an already expanded notch."
   ],
   "platforms": {
     "win32-x64": {
-      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.4/QuickPill-Windows-v5.5.4-Setup.exe",
-      "sha256": "fc2ab232f0158ba3b688e3dd17f4b2f5edad038dc2f1706681b2cc9c4835bac5",
-      "size": 135827183,
+      "url": "https://github.com/pikri-beep/Quick-Pill-Dynamic-Island-for-Windows/releases/download/v5.5.5/QuickPill-Windows-v5.5.5-Setup.exe",
+      "sha256": "20936087475d563bc56d48c8f85b5381b6644b6b991086878a0b45d3f0f91b8f",
+      "size": 135830269,
       "installerType": "nsis"
     }
   }

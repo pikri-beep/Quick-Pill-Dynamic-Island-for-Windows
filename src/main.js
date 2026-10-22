@@ -2397,6 +2397,89 @@ const getIconPath = (forceExt = null) => {
   return path.join(__dirname, `../../src/assets/icons/icon.${ext}`);
 };
 
+// --- Native Cursor Hit-Test (Electron twin of the Tauri Rust watcher) ---
+// The notch floats above every window, so the overlay must stay click-through
+// while idle. Hovering is detected natively (cursor position vs. the notch
+// hitbox) instead of relying on DOM mouse events, which the click-through
+// window only forwards unreliably. This keeps the notch stable: it opens
+// once and does not flicker open/close while the cursor rests on it.
+const cursorHitTest = {
+  hovering: false,
+  hitboxWidth: 175,
+  hitboxHeight: 36,
+  anchorX: null, // horizontal centre of the notch inside the window (CSS px)
+};
+let cursorHitTestTimer = null;
+
+function setNotchHitbox(width, height, expanded, anchorX) {
+  const w = Number(width);
+  const h = Number(height);
+  if (Number.isFinite(w) && w > 0) cursorHitTest.hitboxWidth = w;
+  if (Number.isFinite(h) && h > 0) cursorHitTest.hitboxHeight = h;
+  const anchor = Number(anchorX);
+  cursorHitTest.anchorX = Number.isFinite(anchor) ? anchor : null;
+}
+
+function isCursorInsideNotch(point) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    const cursor = point || screen.getCursorScreenPoint();
+    const bounds = mainWindow.getBounds();
+    const anchorX =
+      cursorHitTest.anchorX !== null
+        ? bounds.x + cursorHitTest.anchorX
+        : bounds.x + Math.round(bounds.width / 2);
+    const halfWidth = cursorHitTest.hitboxWidth / 2;
+    const xMin = anchorX - halfWidth;
+    const xMax = anchorX + halfWidth;
+    const yMin = bounds.y;
+    const yMax = bounds.y + cursorHitTest.hitboxHeight;
+    return cursor.x >= xMin && cursor.x <= xMax && cursor.y >= yMin && cursor.y <= yMax;
+  } catch (_) {
+    return false;
+  }
+}
+
+function startCursorHitTestWatcher() {
+  if (cursorHitTestTimer) return;
+  cursorHitTestTimer = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      const point = screen.getCursorScreenPoint();
+      const inside = isCursorInsideNotch(point);
+
+      if (inside && !cursorHitTest.hovering) {
+        cursorHitTest.hovering = true;
+        mainWindow.setIgnoreMouseEvents(false);
+        mainWindow.webContents.send("notch-cursor-enter");
+        logToFile(`[cursor-hit-test] enter at ${point.x},${point.y} hitbox=${cursorHitTest.hitboxWidth}x${cursorHitTest.hitboxHeight} anchor=${cursorHitTest.anchorX}`);
+      } else if (!inside && cursorHitTest.hovering) {
+        cursorHitTest.hovering = false;
+        mainWindow.setIgnoreMouseEvents(true, { forward: true });
+        mainWindow.webContents.send("notch-cursor-leave");
+        logToFile(`[cursor-hit-test] leave at ${point.x},${point.y}`);
+      } else if (inside && cursorHitTest.hovering) {
+        // Keep the window interactive while the cursor rests on the notch
+        // (the renderer may have toggled it back to click-through).
+        if (lastIgnoreMouseState !== false) {
+          mainWindow.setIgnoreMouseEvents(false);
+          lastIgnoreMouseState = false;
+        }
+      }
+    } catch (err) {
+      if (!cursorHitTest.errorLogged) {
+        cursorHitTest.errorLogged = true;
+        logToFile("[cursor-hit-test] watcher error:", err);
+      }
+    }
+  }, 50);
+}
+
+ipcMain.on("notch:set-hitbox", (event, payload) => {
+  const data = payload || {};
+  setNotchHitbox(data.width, data.height, data.expanded, data.anchorX);
+});
+
 const createWindow = () => {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { x, y, width, height } = primaryDisplay.bounds;
@@ -2787,7 +2870,7 @@ app.whenReady().then(() => {
   app.setAppUserModelId("com.neosparkx.quickpill");
   cleanLegacyStartupEntries();
   createWindow();
-  startKeyLockPolling();
+  startCursorHitTestWatcher();
   startUSBPolling();
   startObstructionDetection();
   startClipboardPolling();
@@ -3416,32 +3499,6 @@ $MediaKey::keybd_event(${vkCode}, 0, 2, [UIntPtr]::Zero)
   }
   return false;
 });
-
-// --- Feature: Key Lock Alerts (NumLock & CapsLock) ---
-let lastNumLock = null;
-let lastCapsLock = null;
-
-function startKeyLockPolling() {
-  if (process.platform !== "win32") return;
-  setInterval(() => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    try {
-      if (user32Lib && user32Lib.GetKeyState) {
-        const num = (user32Lib.GetKeyState(0x90) & 1) !== 0;
-        if (lastNumLock !== null && num !== lastNumLock) {
-          mainWindow.webContents.send("key-lock-change", { key: "NumLock", state: num });
-        }
-        lastNumLock = num;
-
-        const caps = (user32Lib.GetKeyState(0x14) & 1) !== 0;
-        if (lastCapsLock !== null && caps !== lastCapsLock) {
-          mainWindow.webContents.send("key-lock-change", { key: "CapsLock", state: caps });
-        }
-        lastCapsLock = caps;
-      }
-    } catch (_) {}
-  }, 150);
-}
 
 // --- Feature: USB Drive Detection ---
 let knownUSBDrives = null;

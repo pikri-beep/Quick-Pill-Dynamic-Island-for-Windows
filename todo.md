@@ -1,12 +1,13 @@
 FEATURE 
 - [x] Terapkan efek dust disappear saat menghapus task, todo, notifikasi di electron (quick pill utama bukan tauri)
 - [x] Terapkan suara notifikasi ala iphone saat notifikasi aktif di electron (quick pill utama bukan tauri)
+- [x] Hapus feature capslock, tidak dibutuhkan
+
 
 BUGS
-- [x] update di setting tidak bekerja, saat disuruh restart. aplikasi tidak menjalankan ulang, Saat direstart manual pun tidak terupdate
-    - Installer kini dijalankan helper PowerShell terpisah: tunggu proses Quick Pill benar-benar keluar, lepas lock (audio-helper), install diam, lalu relaunch versi baru.
-    - Download gagal (404/hash rusak) tidak lagi dilaporkan "berhasil" sehingga tidak mencoba install file yang sudah dihapus.
-    - Manifest update diambil dari repo rilis (R2 yang sertifikatnya kedaluwarsa dibuang).
+- [x] Quick pill sangat sensitif, Saat di hover dia buka lalu menutup.
+    - Penyebab: build Electron tidak punya deteksi hover native (hanya Tauri yang punya watcher Rust), jadi hover bergantung pada mouse event yang diteruskan window click-through -- dan itu sering desync.
+    - Perbaikan:added native cursor hit-test di main process (GetCursorScreenPoint vs hitbox notch), hover intent 140ms sebelum membuka, collapse diverifikasi lewat posisi kursor, dan CSS transition yang bentrok dengan Framer Motion dihapus.
 
 
 ALWAYS DO

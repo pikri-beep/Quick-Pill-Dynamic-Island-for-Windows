@@ -47,10 +47,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getNotifications: () => ipcRenderer.invoke('get-notifications'),
   dismissNotification: (id) => ipcRenderer.invoke('dismiss-notification', id),
   focusNotificationApp: (appId, appName) => ipcRenderer.invoke('focus-notification-app', appId, appName),
-  onKeyLockChange: (callback) => {
-    const handler = (event, data) => callback(data);
-    ipcRenderer.on('key-lock-change', handler);
-    return () => ipcRenderer.removeListener('key-lock-change', handler);
+  setNotchHitbox: (width, height, expanded, anchorX) =>
+    ipcRenderer.send('notch:set-hitbox', { width, height, expanded, anchorX }),
+  onNotchCursorEnter: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('notch-cursor-enter', handler);
+    return () => ipcRenderer.removeListener('notch-cursor-enter', handler);
+  },
+  onNotchCursorLeave: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('notch-cursor-leave', handler);
+    return () => ipcRenderer.removeListener('notch-cursor-leave', handler);
   },
   onUSBChange: (callback) => {
     const handler = (event, data) => callback(data);
