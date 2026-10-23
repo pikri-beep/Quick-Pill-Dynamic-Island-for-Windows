@@ -113,6 +113,32 @@ pub struct AppState {
     pub launcher_catalog: Mutex<Vec<native::AppEntry>>,
     /// Last clipboard text the app itself has written (dedupe for the watcher).
     pub last_clipboard_text: Mutex<String>,
+    /// Smart Browser Avoidance, read by the obstruction watcher every tick.
+    pub smart_avoidance: std::sync::atomic::AtomicBool,
+    /// Background progress operations (file hash / copy).
+    pub progress: Mutex<ProgressStore>,
+}
+
+/// Background operations surfaced in the Progress Island.
+#[derive(Default)]
+pub struct ProgressStore {
+    pub operations: Vec<serde_json::Value>,
+    pub history: Vec<serde_json::Value>,
+    pub canceled: std::collections::HashSet<String>,
+}
+
+impl ProgressStore {
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "operations": self.operations,
+            "history": self.history,
+            "compactDisplay": self
+                .operations
+                .iter()
+                .find(|op| op.get("status").and_then(|v| v.as_str()) == Some("running"))
+                .cloned(),
+        })
+    }
 }
 
 // -------------------------------------------------------------
@@ -164,11 +190,15 @@ fn set_notch_hitbox(
 
 #[tauri::command]
 fn set_ignore_mouse_events(
-    window: tauri::WebviewWindow,
+    _window: tauri::WebviewWindow,
     ignore: bool,
     _forward: Option<bool>,
 ) -> Result<(), String> {
-    window.set_ignore_cursor_events(ignore).map_err(|e| e.to_string())
+    // Never call `set_ignore_cursor_events`: tao answers it by adding
+    // WS_EX_LAYERED and WebView2 stops compositing the notch. The window
+    // procedure answers WM_NCHITTEST with HTTRANSPARENT instead.
+    native::set_ignore_cursor(ignore);
+    Ok(())
 }
 
 #[tauri::command]
@@ -267,6 +297,18 @@ fn media_script_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 
 #[tauri::command]
 async fn get_system_media(app: tauri::AppHandle) -> Option<MediaInfo> {
+    // Electron guards against overlapping fetches; the PowerShell bridge takes
+    // a few hundred ms and the renderer polls faster than that.
+    static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if IN_FLIGHT.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    let result = fetch_system_media(app).await;
+    IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+    result
+}
+
+async fn fetch_system_media(app: tauri::AppHandle) -> Option<MediaInfo> {
     // The PowerShell WinRT bridge returns the album art as a base64 data URI,
     // which the Rust GSMTC implementation cannot provide.
     if let Some(script) = media_script_path(&app) {
@@ -489,6 +531,46 @@ fn control_system_media(command: String, seek_sec: Option<f64>) -> Result<(), St
 }
 
 // -------------------------------------------------------------
+// System volume + window focus
+// -------------------------------------------------------------
+
+#[cfg(windows)]
+#[tauri::command]
+fn control_system_volume(action: String) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        keybd_event, KEYEVENTF_KEYUP, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
+    };
+    let key = match action.as_str() {
+        "down" => VK_VOLUME_DOWN,
+        "mute" => VK_VOLUME_MUTE,
+        _ => VK_VOLUME_UP,
+    };
+    unsafe {
+        keybd_event(key.0 as u8, 0, Default::default(), 0);
+        keybd_event(key.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+    }
+    true
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn control_system_volume(_action: String) -> bool {
+    false
+}
+
+#[tauri::command]
+fn focus_window(app: tauri::AppHandle) -> bool {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_always_on_top(true);
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return true;
+    }
+    false
+}
+
+// -------------------------------------------------------------
 // JARVIS Local API Bridge
 // -------------------------------------------------------------
 
@@ -610,79 +692,124 @@ fn get_jarvis_config(state: tauri::State<AppState>) -> JarvisConfig {
 fn set_jarvis_config(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
-    config: JarvisConfig,
+    config: serde_json::Value,
 ) -> bool {
-    {
+    // Settings saves partial objects (`{ enabled }`, `{ endpoint }`) - merge
+    // them into the stored config instead of requiring every field.
+    let merged = {
         let mut guard = state.jarvis_config.lock().unwrap();
-        *guard = config.clone();
-    }
+        let mut merged = serde_json::to_value(&*guard).unwrap_or_else(|_| serde_json::json!({}));
+        if let (Some(dst), Some(src)) = (merged.as_object_mut(), config.as_object()) {
+            for (key, value) in src {
+                dst.insert(key.clone(), value.clone());
+            }
+        }
+        match serde_json::from_value::<JarvisConfig>(merged) {
+            Ok(parsed) => {
+                *guard = parsed.clone();
+                parsed
+            }
+            Err(_) => return false,
+        }
+    };
     // Persist so the settings window and the notch always agree.
     if let Some(path) = jarvis_config_path(&app) {
-        if let Ok(raw) = serde_json::to_string_pretty(&config) {
+        if let Ok(raw) = serde_json::to_string_pretty(&merged) {
             let _ = std::fs::write(path, raw);
         }
     }
-    let _ = app.emit("jarvis:configUpdated", &config);
+    let _ = app.emit("jarvis:configUpdated", &merged);
     true
 }
 
 #[tauri::command]
 async fn test_jarvis_connection(endpoint: String) -> serde_json::Value {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build();
-
-    if let Ok(client) = client {
-        let res = client.get(&endpoint).send().await;
-        match res {
-            Ok(r) => serde_json::json!({ "success": r.status().is_success(), "status": r.status().as_u16() }),
-            Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
-        }
-    } else {
-        serde_json::json!({ "success": false, "error": "Client build error" })
-    }
-}
-
-/// Start the local JARVIS server (D:/JARVIS) when it is not running yet.
-#[tauri::command]
-fn launch_jarvis_server() -> serde_json::Value {
-    let jarvis_dir = std::path::Path::new("D:/JARVIS");
-    if !jarvis_dir.exists() {
-        return serde_json::json!({
-            "success": false,
-            "message": "JARVIS was not found at D:/JARVIS"
-        });
-    }
-
-    // Already running?
-    if std::net::TcpStream::connect("127.0.0.1:8765").is_ok() {
-        return serde_json::json!({
-            "success": true,
-            "message": "JARVIS server is already running"
-        });
-    }
-
-    #[cfg(windows)]
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
     {
-        use std::os::windows::process::CommandExt;
-        let detached = 0x0000_0008u32 | 0x0800_0000u32; // DETACHED_PROCESS | CREATE_NO_WINDOW
-        let candidates = [
-            ("python", vec!["-m", "uvicorn", "main:app", "--port", "8765"]),
-            ("py", vec!["-m", "uvicorn", "main:app", "--port", "8765"]),
-        ];
-        for (program, args) in candidates {
-            let spawned = std::process::Command::new(program)
-                .args(&args)
-                .current_dir(jarvis_dir)
-                .creation_flags(detached)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            if spawned.is_ok() {
+        Ok(client) => client,
+        Err(error) => {
+            return serde_json::json!({
+                "success": false,
+                "connected": false,
+                "error": error.to_string()
+            })
+        }
+    };
+
+    let target = if endpoint.trim().is_empty() {
+        JarvisConfig::default().endpoint
+    } else {
+        endpoint.trim().to_string()
+    };
+
+    let origin = reqwest::Url::parse(&target)
+        .ok()
+        .map(|url| url.origin().ascii_serialization());
+
+    // 1. Dedicated status endpoint (D:/JARVIS exposes /api/status).
+    if let Some(origin) = origin.as_deref() {
+        if let Ok(response) = client
+            .get(format!("{}/api/status", origin))
+            .send()
+            .await
+        {
+            if response.status().is_success() {
+                let status = response.status();
+                if let Ok(data) = response.json::<serde_json::Value>().await {
+                    if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
+                        let version = data
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("2.5");
+                        let model = data
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Online");
+                        return serde_json::json!({
+                            "success": true,
+                            "connected": true,
+                            "details": format!("{} v{} ({})", name, version, model)
+                        });
+                    }
+                }
+                if status.as_u16() < 500 {
+                    return serde_json::json!({
+                        "success": true,
+                        "connected": true,
+                        "details": format!("Online ({})", status.as_u16())
+                    });
+                }
+            }
+        }
+    }
+
+    // 2. Probe the configured endpoint itself with a tiny ping.
+    if let Ok(response) = client
+        .post(&target)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "text": "ping", "prompt": "ping" }))
+        .send()
+        .await
+    {
+        if response.status().as_u16() < 500 {
+            return serde_json::json!({
+                "success": true,
+                "connected": true,
+                "details": format!("HTTP {}", response.status().as_u16())
+            });
+        }
+    }
+
+    // 3. Last resort: is anything listening on that origin?
+    if let Some(origin) = origin.as_deref() {
+        if let Ok(response) = client.get(origin).send().await {
+            if response.status().as_u16() < 500 {
                 return serde_json::json!({
                     "success": true,
-                    "message": "JARVIS server is starting"
+                    "connected": true,
+                    "details": format!("Host online ({})", response.status().as_u16())
                 });
             }
         }
@@ -690,26 +817,147 @@ fn launch_jarvis_server() -> serde_json::Value {
 
     serde_json::json!({
         "success": false,
-        "message": "Could not start the JARVIS server - start it manually on port 8765"
+        "connected": false,
+        "error": "Cannot reach the JARVIS server"
+    })
+}
+
+/// Start the local JARVIS server (D:/JARVIS\run_gui.bat), Electron parity.
+#[tauri::command]
+fn launch_jarvis_server() -> serde_json::Value {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let bat = std::path::Path::new("D:/JARVIS/run_gui.bat");
+        if bat.exists() {
+            let spawned = std::process::Command::new("cmd")
+                .args(["/c", "run_gui.bat"])
+                .current_dir("D:/JARVIS")
+                .creation_flags(0x0000_0008) // DETACHED_PROCESS
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            match spawned {
+                Ok(_) => {
+                    return serde_json::json!({
+                        "success": true,
+                        "message": "JARVIS launch initiated."
+                    })
+                }
+                Err(error) => {
+                    return serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to launch run_gui.bat: {}", error)
+                    })
+                }
+            }
+        }
+
+        // Graceful fallback: start the FastAPI app directly.
+        let jarvis_dir = std::path::Path::new("D:/JARVIS");
+        if jarvis_dir.exists() {
+            if std::net::TcpStream::connect("127.0.0.1:8765").is_ok() {
+                return serde_json::json!({
+                    "success": true,
+                    "message": "JARVIS server is already running"
+                });
+            }
+            let detached = 0x0000_0008u32 | 0x0800_0000u32; // DETACHED_PROCESS | CREATE_NO_WINDOW
+            for (program, args) in [
+                ("python", vec!["-m", "uvicorn", "main:app", "--port", "8765"]),
+                ("py", vec!["-m", "uvicorn", "main:app", "--port", "8765"]),
+            ] {
+                let spawned = std::process::Command::new(program)
+                    .args(&args)
+                    .current_dir(jarvis_dir)
+                    .creation_flags(detached)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                if spawned.is_ok() {
+                    return serde_json::json!({
+                        "success": true,
+                        "message": "JARVIS server is starting"
+                    });
+                }
+            }
+        }
+
+        return serde_json::json!({
+            "success": false,
+            "error": "D:\\JARVIS\\run_gui.bat not found."
+        });
+    }
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn launch_jarvis_server() -> serde_json::Value {
+    serde_json::json!({
+        "success": false,
+        "error": "JARVIS is only available on Windows."
     })
 }
 
 #[tauri::command]
-fn stop_jarvis_server() -> bool {
-    // The JARVIS server owns its own lifecycle; we only report the state.
-    let running = std::net::TcpStream::connect("127.0.0.1:8765").is_ok();
-    if running {
-        return false;
+async fn stop_jarvis_server() -> serde_json::Value {
+    // 1. Ask the gateway to shut down gracefully.
+    if let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_millis(1500))
+        .build()
+    {
+        let _ = client
+            .post("http://127.0.0.1:8765/api/shutdown")
+            .header("Content-Type", "application/json")
+            .send()
+            .await;
     }
-    true
+
+    // 2. Free the remaining processes with the bundled helper script.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let stop_bat = std::path::Path::new("D:/JARVIS/stop_jarvis.bat");
+        if stop_bat.exists() {
+            let _ = std::process::Command::new("cmd")
+                .args(["/c", "stop_jarvis.bat"])
+                .current_dir("D:/JARVIS")
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .spawn();
+        }
+    }
+
+    serde_json::json!({
+        "success": true,
+        "message": "JARVIS stopped and resources freed."
+    })
 }
 
 // -------------------------------------------------------------
 // Settings window
 // -------------------------------------------------------------
 
-#[tauri::command]
+/// Must match `app.windows[0].additionalBrowserArgs` in `tauri.conf.json`.
+///
+/// WebView2 allows only one set of environment options per user-data folder;
+/// a second webview with different arguments fails with `0x8007139F`
+/// (ERROR_INVALID_STATE) and the window never appears.
+const WEBVIEW_BROWSER_ARGS: &str =
+    "--disable-features=Translate,MediaRouter --js-flags=--max-old-space-size=48";
+
+#[tauri::command(async)]
 fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    open_settings_window_impl(app)
+}
+
+/// Creates (or focuses) the settings window.
+///
+/// Must never run on the event-loop thread: WebView2 creation waits for the
+/// message loop to pump, so calling this from a tray/menu handler would hang.
+fn open_settings_window_impl(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("settings") {
         let _ = win.unminimize();
         let _ = win.show();
@@ -725,6 +973,7 @@ fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     .title("Quick Pill Settings")
     .inner_size(800.0, 600.0)
     .min_inner_size(600.0, 450.0)
+    .additional_browser_args(WEBVIEW_BROWSER_ARGS)
     .resizable(true)
     .decorations(true)
     .center()
@@ -827,42 +1076,53 @@ fn open_external(url: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn get_camera_status() -> bool {
+/// Electron matches `LastUsedTimeStop REG_QWORD 0x0` exactly; a substring test
+/// would also match `0x01` and light the privacy dot permanently.
+#[cfg(windows)]
+fn consent_store_in_use(path: &str) -> bool {
     let output = std::process::Command::new("reg")
-        .args([
-            "query",
-            "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam",
-            "/s",
-        ])
+        .args(["query", path, "/s"])
         .creation_flags(0x08000000)
         .output();
 
-    if let Ok(out) = output {
-        let text = String::from_utf8_lossy(&out.stdout);
-        text.contains("LastUsedTimeStop") && text.contains("0x0")
-    } else {
-        false
+    match output {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next().unwrap_or_default();
+            let _kind = parts.next();
+            let value = parts.next().unwrap_or_default();
+            name.eq_ignore_ascii_case("LastUsedTimeStop") && value.eq_ignore_ascii_case("0x0")
+        }),
+        Err(_) => false,
     }
 }
 
+#[cfg(windows)]
+#[tauri::command]
+fn get_camera_status() -> bool {
+    consent_store_in_use(
+        "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam",
+    )
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn get_camera_status() -> bool {
+    false
+}
+
+#[cfg(windows)]
 #[tauri::command]
 fn get_microphone_status() -> bool {
-    let output = std::process::Command::new("reg")
-        .args([
-            "query",
-            "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone",
-            "/s",
-        ])
-        .creation_flags(0x08000000)
-        .output();
+    consent_store_in_use(
+        "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone",
+    )
+}
 
-    if let Ok(out) = output {
-        let text = String::from_utf8_lossy(&out.stdout);
-        text.contains("LastUsedTimeStop") && text.contains("0x0")
-    } else {
-        false
-    }
+#[cfg(not(windows))]
+#[tauri::command]
+fn get_microphone_status() -> bool {
+    false
 }
 
 #[tauri::command]
@@ -901,14 +1161,26 @@ fn get_app_version(app: tauri::AppHandle) -> String {
 // -------------------------------------------------------------
 
 #[tauri::command]
-fn set_auto_launch(enable: bool) -> Result<(), String> {
+fn set_auto_launch(app: tauri::AppHandle, enable: bool) -> Result<(), String> {
+    const RUN_KEY: &str = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    // Entries an Electron install may have left behind, so switching to the
+    // Tauri build does not leave two "start with Windows" entries.
+    const LEGACY_NAMES: [&str; 5] = [
+        "Quick Pill",
+        "electron.app.Quick Pill",
+        "electron.app.Ripple",
+        "electron.app.Electron",
+        "Ripple",
+    ];
+
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_str = exe.to_string_lossy().to_string();
+
     if enable {
-        let _ = std::process::Command::new("reg")
+        let output = std::process::Command::new("reg")
             .args([
                 "add",
-                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                RUN_KEY,
                 "/v",
                 "QuickPill",
                 "/t",
@@ -918,38 +1190,92 @@ fn set_auto_launch(enable: bool) -> Result<(), String> {
                 "/f",
             ])
             .creation_flags(0x08000000)
-            .output();
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
     } else {
         let _ = std::process::Command::new("reg")
-            .args([
-                "delete",
-                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                "/v",
-                "QuickPill",
-                "/f",
-            ])
+            .args(["delete", RUN_KEY, "/v", "QuickPill", "/f"])
             .creation_flags(0x08000000)
             .output();
     }
+
+    for name in LEGACY_NAMES {
+        let _ = std::process::Command::new("reg")
+            .args(["delete", RUN_KEY, "/v", name, "/f"])
+            .creation_flags(0x08000000)
+            .output();
+    }
+
+    if let Some(item) = TRAY_AUTOSTART.lock().unwrap().as_ref() {
+        let _ = item.set_checked(enable);
+    }
+    let _ = app.emit("settings:auto-launch-changed", enable);
     Ok(())
 }
 
 #[tauri::command]
 fn get_auto_launch() -> bool {
-    let output = std::process::Command::new("reg")
-        .args([
-            "query",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v",
-            "QuickPill",
-        ])
+    const RUN_KEY: &str = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    ["QuickPill", "Quick Pill", "electron.app.Quick Pill"]
+        .iter()
+        .any(|name| {
+            std::process::Command::new("reg")
+                .args(["query", RUN_KEY, "/v", name])
+                .creation_flags(0x08000000)
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        })
+}
+
+#[tauri::command]
+fn create_desktop_shortcut() -> serde_json::Value {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return serde_json::json!({ "success": false, "error": error.to_string() })
+        }
+    };
+    let exe_str = exe.to_string_lossy().to_string();
+    let work_dir = exe
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    // WScript.Shell is the same shell-link API Electron's `shell.writeShortcutLink`
+    // uses, and it resolves the real Desktop folder (including OneDrive).
+    let script = format!(
+        "$desktop=[Environment]::GetFolderPath('Desktop');\
+         $lnk=Join-Path $desktop 'Quick Pill.lnk';\
+         $s=(New-Object -ComObject WScript.Shell).CreateShortcut($lnk);\
+         $s.TargetPath='{exe}';\
+         $s.WorkingDirectory='{dir}';\
+         $s.Description='Quick Pill - Dynamic Island for Windows';\
+         $s.IconLocation='{exe},0';\
+         $s.Save();\
+         Write-Output $lnk",
+        exe = exe_str.replace('\'', "''"),
+        dir = work_dir.replace('\'', "''"),
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
         .creation_flags(0x08000000)
         .output();
 
-    if let Ok(o) = output {
-        o.status.success()
-    } else {
-        false
+    match output {
+        Ok(out) if out.status.success() => {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            serde_json::json!({ "success": true, "path": path })
+        }
+        Ok(out) => serde_json::json!({
+            "success": false,
+            "error": String::from_utf8_lossy(&out.stderr).trim()
+        }),
+        Err(error) => serde_json::json!({ "success": false, "error": error.to_string() }),
     }
 }
 
@@ -973,6 +1299,25 @@ fn get_app_setting(state: tauri::State<AppState>, key: String) -> serde_json::Va
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// `minimalNotch` -> `settings:minimal-notch:changed` (the names the renderer
+/// subscribes to in `bridge.js`).
+fn setting_event_name(key: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in key.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('-');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else if ch == '_' {
+            out.push('-');
+        } else {
+            out.push(ch);
+        }
+    }
+    format!("settings:{}:changed", out)
+}
+
 #[tauri::command]
 fn set_app_setting(
     app: tauri::AppHandle,
@@ -989,7 +1334,31 @@ fn set_app_setting(
         let snapshot = settings.clone();
         save_settings(&app, &snapshot);
     }
-    let _ = app.emit(&format!("settings:{}:changed", key), &value);
+    if key == "smartBrowserAvoidance" {
+        if let Some(flag) = value.as_bool() {
+            state
+                .smart_avoidance
+                .store(flag, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    match key.as_str() {
+        "mascotMode" => {
+            if let Some(item) = TRAY_MASCOT.lock().unwrap().as_ref() {
+                let _ = item.set_checked(value.as_bool().unwrap_or(false));
+            }
+        }
+        "minimalNotch" => {
+            if let Some(item) = TRAY_MINIMAL.lock().unwrap().as_ref() {
+                let _ = item.set_checked(value.as_bool().unwrap_or(false));
+            }
+        }
+        _ => {}
+    }
+    let _ = app.emit(&setting_event_name(&key), &value);
+    let _ = app.emit(
+        "settings:changed",
+        serde_json::json!({ "key": key, "value": value }),
+    );
     true
 }
 
@@ -1113,6 +1482,54 @@ fn get_displays() -> serde_json::Value {
     {
         serde_json::json!([{ "id": "primary", "bounds": { "x": 0, "y": 0, "width": 1920, "height": 1080 } }])
     }
+}
+
+// -------------------------------------------------------------
+// Monitor selection (Electron `set-display`)
+// -------------------------------------------------------------
+
+#[tauri::command]
+fn set_display(app: tauri::AppHandle, display_id: String) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+
+    let monitors = window.available_monitors().unwrap_or_default();
+    if monitors.is_empty() {
+        return false;
+    }
+
+    // Electron hands us ids like `\\.\DISPLAY2`; Tauri exposes the same device
+    // name, with the monitor index as a fallback.
+    let by_name = monitors.iter().find(|monitor| {
+        monitor
+            .name()
+            .map(|name| name.eq_ignore_ascii_case(&display_id) || name.contains(&display_id))
+            .unwrap_or(false)
+    });
+    let by_index = display_id
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .last()
+        .and_then(|c| c.to_digit(10))
+        .and_then(|index| monitors.get(index.saturating_sub(1) as usize));
+
+    let Some(monitor) = by_name.or(by_index) else {
+        return false;
+    };
+
+    let scale = monitor.scale_factor();
+    let win_size = window
+        .outer_size()
+        .unwrap_or(tauri::PhysicalSize::new((520.0 * scale) as u32, (165.0 * scale) as u32));
+
+    let x = monitor.position().x + (monitor.size().width as i32 - win_size.width as i32) / 2;
+    let y = monitor.position().y;
+
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)));
+    let _ = window.unminimize();
+    let _ = window.show();
+    true
 }
 
 // -------------------------------------------------------------
@@ -1302,6 +1719,400 @@ fn get_file_info(file_path: String) -> serde_json::Value {
         "type": path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default(),
         "exists": metadata.is_some()
     })
+}
+
+// -------------------------------------------------------------
+// Progress Island (background hash / file copy operations)
+// -------------------------------------------------------------
+
+fn progress_snapshot_of(app: &tauri::AppHandle) -> serde_json::Value {
+    app.try_state::<AppState>()
+        .map(|state| state.progress.lock().unwrap().snapshot())
+        .unwrap_or_else(|| serde_json::json!({ "operations": [], "history": [], "compactDisplay": null }))
+}
+
+fn progress_emit(app: &tauri::AppHandle) {
+    let _ = app.emit("progress:update", progress_snapshot_of(app));
+}
+
+fn progress_patch<F>(app: &tauri::AppHandle, id: &str, patch: F)
+where
+    F: FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+{
+    if let Some(state) = app.try_state::<AppState>() {
+        {
+            let mut store = state.progress.lock().unwrap();
+            if let Some(operation) = store
+                .operations
+                .iter_mut()
+                .find(|op| op.get("id").and_then(|v| v.as_str()) == Some(id))
+            {
+                if let Some(map) = operation.as_object_mut() {
+                    patch(map);
+                }
+            }
+        }
+        progress_emit(app);
+    }
+}
+
+fn progress_push(app: &tauri::AppHandle, operation: serde_json::Value) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state
+            .progress
+            .lock()
+            .unwrap()
+            .operations
+            .insert(0, operation);
+    }
+    progress_emit(app);
+}
+
+#[tauri::command]
+fn progress_get_snapshot(state: tauri::State<AppState>) -> serde_json::Value {
+    state.progress.lock().unwrap().snapshot()
+}
+
+#[tauri::command]
+fn progress_clear_history(app: tauri::AppHandle, state: tauri::State<AppState>) -> bool {
+    {
+        let mut store = state.progress.lock().unwrap();
+        store.history.clear();
+        store.operations.retain(|op| {
+            op.get("status").and_then(|v| v.as_str()) == Some("running")
+        });
+    }
+    progress_emit(&app);
+    true
+}
+
+#[tauri::command]
+fn progress_select_file() -> Option<String> {
+    native::pick_file("Select a file", &[])
+}
+
+#[tauri::command]
+fn progress_execute_action(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    operation_id: String,
+    action: String,
+) -> bool {
+    match action.as_str() {
+        "cancel" | "cancelOperation" => {
+            state
+                .progress
+                .lock()
+                .unwrap()
+                .canceled
+                .insert(operation_id.clone());
+            progress_patch(&app, &operation_id, |map| {
+                map.insert("status".into(), serde_json::json!("canceled"));
+            });
+            true
+        }
+        "clear" | "remove" => {
+            {
+                let mut store = state.progress.lock().unwrap();
+                store
+                    .operations
+                    .retain(|op| op.get("id").and_then(|v| v.as_str()) != Some(operation_id.as_str()));
+                store
+                    .history
+                    .retain(|op| op.get("id").and_then(|v| v.as_str()) != Some(operation_id.as_str()));
+            }
+            progress_emit(&app);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// SHA-256 of a file, reporting progress as it streams.
+#[tauri::command]
+fn progress_start_hash_operation(
+    app: tauri::AppHandle,
+    payload: serde_json::Value,
+) -> bool {
+    use std::io::Read;
+
+    let source = payload
+        .get("sourcePath")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if source.is_empty() {
+        return false;
+    }
+    let path = std::path::Path::new(&source);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| source.clone());
+    let total = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let id = format!("op-{}", now_millis());
+
+    progress_push(
+        &app,
+        serde_json::json!({
+            "id": id,
+            "type": "hash",
+            "title": format!("Hashing {}", name),
+            "status": "running",
+            "progress": 0.0,
+            "processedBytes": 0,
+            "totalBytes": total,
+            "speed": 0.0,
+            "etaSeconds": null,
+            "sourcePath": source,
+            "detail": null,
+            "startedAt": now_millis(),
+        }),
+    );
+
+    let app_handle = app.clone();
+    let op_id = id.clone();
+    std::thread::spawn(move || {
+        use ring::digest::{Context, SHA256};
+
+        let started = std::time::Instant::now();
+        let mut context = Context::new(&SHA256);
+        let mut processed: u64 = 0;
+        let mut last_emit = std::time::Instant::now();
+        let mut failed: Option<String> = None;
+
+        match std::fs::File::open(&source) {
+            Ok(mut file) => {
+                let mut buffer = vec![0u8; 1024 * 1024];
+                loop {
+                    let canceled = app_handle
+                        .try_state::<AppState>()
+                        .map(|state| state.progress.lock().unwrap().canceled.contains(&op_id))
+                        .unwrap_or(false);
+                    if canceled {
+                        break;
+                    }
+                    match file.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(read) => {
+                            context.update(&buffer[..read]);
+                            processed += read as u64;
+                            if last_emit.elapsed().as_millis() >= 120 {
+                                last_emit = std::time::Instant::now();
+                                let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                                let speed = processed as f64 / elapsed;
+                                let percent = if total > 0 {
+                                    (processed as f64 / total as f64) * 100.0
+                                } else {
+                                    0.0
+                                };
+                                let eta = if speed > 0.0 && total > processed {
+                                    Some(((total - processed) as f64 / speed) as u64)
+                                } else {
+                                    None
+                                };
+                                progress_patch(&app_handle, &op_id, |map| {
+                                    map.insert("processedBytes".into(), serde_json::json!(processed));
+                                    map.insert(
+                                        "progress".into(),
+                                        serde_json::json!(percent.min(99.9)),
+                                    );
+                                    map.insert("speed".into(), serde_json::json!(speed));
+                                    map.insert("etaSeconds".into(), serde_json::json!(eta));
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            failed = Some(error.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(error) => failed = Some(error.to_string()),
+        }
+
+        let digest = context.finish();
+        let hex: String = digest.as_ref().iter().map(|b| format!("{:02x}", b)).collect();
+
+        let canceled = app_handle
+            .try_state::<AppState>()
+            .map(|state| state.progress.lock().unwrap().canceled.contains(&op_id))
+            .unwrap_or(false);
+
+        progress_patch(&app_handle, &op_id, |map| {
+            if let Some(error) = &failed {
+                map.insert("status".into(), serde_json::json!("failed"));
+                map.insert("detail".into(), serde_json::json!(error));
+            } else if canceled {
+                map.insert("status".into(), serde_json::json!("canceled"));
+                map.insert("finishedAt".into(), serde_json::json!(now_millis()));
+            } else {
+                map.insert("status".into(), serde_json::json!("completed"));
+                map.insert("progress".into(), serde_json::json!(100.0));
+                map.insert("processedBytes".into(), serde_json::json!(processed));
+                map.insert("detail".into(), serde_json::json!(hex));
+                map.insert("finishedAt".into(), serde_json::json!(now_millis()));
+            }
+        });
+
+        // Move finished operations into history.
+        if let Some(state) = app_handle.try_state::<AppState>() {
+            let mut store = state.progress.lock().unwrap();
+            if let Some(index) = store
+                .operations
+                .iter()
+                .position(|op| op.get("id").and_then(|v| v.as_str()) == Some(op_id.as_str()))
+            {
+                let operation = store.operations.remove(index);
+                store.history.insert(0, operation);
+                if store.history.len() > 20 {
+                    store.history.truncate(20);
+                }
+            }
+            store.canceled.remove(&op_id);
+        }
+        progress_emit(&app_handle);
+    });
+
+    true
+}
+
+/// Copy a file, reporting progress as it streams.
+#[tauri::command]
+fn progress_start_file_operation(
+    app: tauri::AppHandle,
+    payload: serde_json::Value,
+) -> bool {
+    use std::io::{Read, Write};
+
+    let source = payload
+        .get("sourcePath")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let destination = payload
+        .get("destinationPath")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if source.is_empty() || destination.is_empty() {
+        return false;
+    }
+
+    let name = std::path::Path::new(&source)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| source.clone());
+    let total = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
+    let id = format!("op-{}", now_millis());
+
+    progress_push(
+        &app,
+        serde_json::json!({
+            "id": id,
+            "type": "file-operation",
+            "title": format!("Copying {}", name),
+            "status": "running",
+            "progress": 0.0,
+            "processedBytes": 0,
+            "totalBytes": total,
+            "speed": 0.0,
+            "etaSeconds": null,
+            "sourcePath": source,
+            "destinationPath": destination,
+            "detail": null,
+            "startedAt": now_millis(),
+        }),
+    );
+
+    let app_handle = app.clone();
+    let op_id = id.clone();
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let mut processed: u64 = 0;
+        let mut last_emit = std::time::Instant::now();
+        let mut failed: Option<String> = None;
+
+        let result = (|| -> std::io::Result<()> {
+            let mut input = std::fs::File::open(&source)?;
+            let mut output = std::fs::File::create(&destination)?;
+            let mut buffer = vec![0u8; 1024 * 1024];
+            loop {
+                let canceled = app_handle
+                    .try_state::<AppState>()
+                    .map(|state| state.progress.lock().unwrap().canceled.contains(&op_id))
+                    .unwrap_or(false);
+                if canceled {
+                    return Ok(());
+                }
+                let read = input.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                output.write_all(&buffer[..read])?;
+                processed += read as u64;
+                if last_emit.elapsed().as_millis() >= 120 {
+                    last_emit = std::time::Instant::now();
+                    let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                    let speed = processed as f64 / elapsed;
+                    let percent = if total > 0 {
+                        (processed as f64 / total as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    progress_patch(&app_handle, &op_id, |map| {
+                        map.insert("processedBytes".into(), serde_json::json!(processed));
+                        map.insert("progress".into(), serde_json::json!(percent.min(99.9)));
+                        map.insert("speed".into(), serde_json::json!(speed));
+                    });
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            failed = Some(error.to_string());
+        }
+
+        let canceled = app_handle
+            .try_state::<AppState>()
+            .map(|state| state.progress.lock().unwrap().canceled.contains(&op_id))
+            .unwrap_or(false);
+
+        progress_patch(&app_handle, &op_id, |map| {
+            if let Some(error) = &failed {
+                map.insert("status".into(), serde_json::json!("failed"));
+                map.insert("detail".into(), serde_json::json!(error));
+            } else if canceled {
+                map.insert("status".into(), serde_json::json!("canceled"));
+            } else {
+                map.insert("status".into(), serde_json::json!("completed"));
+                map.insert("progress".into(), serde_json::json!(100.0));
+                map.insert("processedBytes".into(), serde_json::json!(processed));
+                map.insert("finishedAt".into(), serde_json::json!(now_millis()));
+            }
+        });
+
+        if let Some(state) = app_handle.try_state::<AppState>() {
+            let mut store = state.progress.lock().unwrap();
+            if let Some(index) = store
+                .operations
+                .iter()
+                .position(|op| op.get("id").and_then(|v| v.as_str()) == Some(op_id.as_str()))
+            {
+                let operation = store.operations.remove(index);
+                store.history.insert(0, operation);
+                if store.history.len() > 20 {
+                    store.history.truncate(20);
+                }
+            }
+            store.canceled.remove(&op_id);
+        }
+        progress_emit(&app_handle);
+    });
+
+    true
 }
 
 // -------------------------------------------------------------
@@ -1845,15 +2656,13 @@ fn start_obstruction_watcher(app_handle: tauri::AppHandle) {
                     || cls == "Shell_TrayWnd"
                     || cls == "Shell_SecondaryTrayWnd";
 
-                let is_own_window = if let Some(main_win) = app_handle.get_webview_window("main") {
-                    if let Ok(hwnd) = main_win.hwnd() {
-                        hwnd.0 == fg_hwnd.0
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
+                let is_own_window = ["main", "settings"].iter().any(|label| {
+                    app_handle
+                        .get_webview_window(label)
+                        .and_then(|win| win.hwnd().ok())
+                        .map(|hwnd| hwnd.0 == fg_hwnd.0)
+                        .unwrap_or(false)
+                });
 
                 let mut is_obstructed = false;
 
@@ -1864,27 +2673,32 @@ fn start_obstruction_watcher(app_handle: tauri::AppHandle) {
 
                     let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
                     let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-                    let center_x = screen_w / 2;
+                    let window_w = rect.right - rect.left;
+                    let window_h = rect.bottom - rect.top;
 
-                    // Check horizontal overlap with center notch area (+/- 160px from center)
-                    let overlaps_center = rect.left < (center_x + 160) && rect.right > (center_x - 160);
-
-                    // 1. Fullscreen apps
-                    if rect.left <= 0
+                    let covers_screen = rect.left <= 0
                         && rect.top <= 0
                         && rect.right >= screen_w
                         && rect.bottom >= screen_h
-                        && !is_zoomed
-                    {
+                        && window_w >= screen_w
+                        && window_h >= screen_h;
+
+                    // Electron parity: a maximized window, or a window pinned to
+                    // the top edge that spans almost the whole screen.
+                    let top_anchored =
+                        rect.top <= 8 && window_w as f64 >= screen_w as f64 * 0.90;
+
+                    if covers_screen && !is_zoomed {
+                        // Rule 1 - fullscreen app (game / F11 video): always hide.
                         is_obstructed = true;
-                    }
-                    // 2. Maximized window
-                    else if is_zoomed {
-                        is_obstructed = true;
-                    }
-                    // 3. Normal window that horizontally overlaps center notch and top <= 42
-                    else if overlaps_center && rect.top <= 42 && rect.bottom > 42 {
-                        is_obstructed = true;
+                    } else if is_zoomed || top_anchored {
+                        // Rule 2 - only when Smart Browser Avoidance is enabled.
+                        is_obstructed = app_handle
+                            .try_state::<AppState>()
+                            .map(|state| {
+                                state.smart_avoidance.load(std::sync::atomic::Ordering::Relaxed)
+                            })
+                            .unwrap_or(true);
                     }
                 }
 
@@ -2097,6 +2911,15 @@ pub fn now_millis() -> u64 {
 // -------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Tray check items, so a toggle made in Settings is reflected in the menu
+/// (Electron rebuilds the whole context menu for the same reason).
+static TRAY_AUTOSTART: std::sync::Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>> =
+    std::sync::Mutex::new(None);
+static TRAY_MASCOT: std::sync::Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>> =
+    std::sync::Mutex::new(None);
+static TRAY_MINIMAL: std::sync::Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>> =
+    std::sync::Mutex::new(None);
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
@@ -2112,6 +2935,8 @@ pub fn run() {
             notifications: notifications::NotificationEngine::new(),
             launcher_catalog: Mutex::new(Vec::new()),
             last_clipboard_text: Mutex::new(String::new()),
+            smart_avoidance: std::sync::atomic::AtomicBool::new(true),
+            progress: Mutex::new(ProgressStore::default()),
         })
         .invoke_handler(tauri::generate_handler![
             set_notch_hitbox,
@@ -2122,6 +2947,8 @@ pub fn run() {
             get_battery_status,
             get_system_media,
             control_system_media,
+            control_system_volume,
+            focus_window,
             ask_jarvis,
             get_jarvis_config,
             set_jarvis_config,
@@ -2148,6 +2975,14 @@ pub fn run() {
             get_always_on_top,
             set_always_on_top,
             get_displays,
+            set_display,
+            create_desktop_shortcut,
+            progress_get_snapshot,
+            progress_clear_history,
+            progress_select_file,
+            progress_execute_action,
+            progress_start_hash_operation,
+            progress_start_file_operation,
             audio_mixer_get_devices,
             audio_mixer_get_sessions,
             audio_mixer_set_volume,
@@ -2230,6 +3065,13 @@ pub fn run() {
                         let _ = window.set_always_on_top(always_on_top);
                     }
                 }
+                let avoidance = settings
+                    .get("smartBrowserAvoidance")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                state
+                    .smart_avoidance
+                    .store(avoidance, std::sync::atomic::Ordering::Relaxed);
             }
             if let Some(path) = jarvis_config_path(&handle) {
                 if let Ok(raw) = std::fs::read_to_string(path) {
@@ -2338,6 +3180,10 @@ pub fn run() {
             let sep2 = PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "Exit", true, None::<&str>)?;
 
+            *TRAY_AUTOSTART.lock().unwrap() = Some(autostart_item.clone());
+            *TRAY_MASCOT.lock().unwrap() = Some(mascot_item.clone());
+            *TRAY_MINIMAL.lock().unwrap() = Some(minimal_item.clone());
+
             let tray_menu = Menu::with_items(
                 app,
                 &[
@@ -2367,8 +3213,7 @@ pub fn run() {
                         }
                         "autostart" => {
                             let enabled = !get_auto_launch();
-                            let _ = set_auto_launch(enabled);
-                            let _ = app.emit("settings:auto-launch-changed", enabled);
+                            let _ = set_auto_launch(app.clone(), enabled);
                         }
                         "mascot" => {
                             let next = toggle_setting(app.clone(), "mascotMode");
@@ -2379,7 +3224,12 @@ pub fn run() {
                             let _ = app.emit("settings:minimal-notch-changed", next);
                         }
                         "settings" => {
-                            let _ = open_settings_window(app.clone());
+                            // Runs on the event-loop thread: build the webview
+                            // on a worker so WebView2 can pump its messages.
+                            let app = app.clone();
+                            std::thread::spawn(move || {
+                                let _ = open_settings_window_impl(app);
+                            });
                         }
                         "quit" => {
                             app.exit(0);

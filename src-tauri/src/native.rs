@@ -64,6 +64,15 @@ static HITBOX: [AtomicI32; 4] = [
 /// The window procedure that was installed before we took over.
 static ORIGINAL_WNDPROC: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
+/// Whole-window click-through (Ctrl-hover mode). Unlike
+/// `set_ignore_cursor_events` this keeps the window non-layered, so the notch
+/// keeps rendering while every click falls through to the app underneath.
+static IGNORE_CURSOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_ignore_cursor(ignore: bool) {
+    IGNORE_CURSOR.store(ignore, Ordering::Relaxed);
+}
+
 /// Update the interactive hit-box (screen coordinates, physical pixels).
 pub fn set_hitbox(left: i32, top: i32, right: i32, bottom: i32) {
     HITBOX[0].store(left, Ordering::Relaxed);
@@ -95,6 +104,10 @@ unsafe extern "system" fn notch_window_proc(
     use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, WM_NCHITTEST};
 
     if message == WM_NCHITTEST {
+        // Ctrl-hover click-through: every pixel belongs to the app underneath.
+        if IGNORE_CURSOR.load(Ordering::Relaxed) {
+            return LRESULT(-1isize);
+        }
         // The hit-test coordinates are packed into lparam as signed shorts.
         let x = (lparam.0 & 0xFFFF) as i16 as i32;
         let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
@@ -554,49 +567,86 @@ pub fn parse_accelerator(accel: &str) -> Option<ParsedHotkey> {
     })
 }
 
+/// The most recent shortcut map. A hotkey reload replaces this instead of
+/// spawning a second registration thread (a second `RegisterHotKey` for the
+/// same key fails, which used to leave the old hotkeys alive).
+static HOTKEY_MAP: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
+static HOTKEY_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+const WM_APP_RELOAD_HOTKEYS: u32 = 0x8000 + 1;
+
 /// Register the global hotkeys and call `emit(key)` whenever one fires.
 /// The callback runs on a dedicated thread, therefore it must be `Send`.
 pub fn spawn_hotkey_thread(
     shortcuts: HashMap<String, String>,
     emit: Arc<dyn Fn(String) + Send + Sync>,
 ) {
+    *HOTKEY_MAP.lock().unwrap() = Some(shortcuts);
+
+    // The thread is already running: ask it to un/re-register in place.
+    let existing = HOTKEY_THREAD_ID.load(Ordering::Relaxed);
+    if existing != 0 {
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::Foundation::{LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+            let _ = PostThreadMessageW(existing, WM_APP_RELOAD_HOTKEYS, WPARAM(0), LPARAM(0));
+        }
+        return;
+    }
+
     std::thread::spawn(move || {
         #[cfg(windows)]
         {
             use windows::Win32::Foundation::HWND;
-            use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, HOT_KEY_MODIFIERS};
+            use windows::Win32::System::Threading::GetCurrentThreadId;
+            use windows::Win32::UI::Input::KeyboardAndMouse::{
+                RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
+            };
             use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
 
-            let mut registered: Vec<(i32, String)> = Vec::new();
-            for (key, accel) in shortcuts.iter() {
-                // Ctrl is reserved for the click-through mode (Electron parity).
-                if accel.to_ascii_uppercase().contains("CTRL") {
-                    continue;
-                }
-                let Some(parsed) = parse_accelerator(accel) else {
-                    continue;
-                };
-                let id = registered.len() as i32 + 1;
-                let result = unsafe {
-                    RegisterHotKey(
-                        HWND(std::ptr::null_mut()),
-                        id,
-                        HOT_KEY_MODIFIERS(parsed.modifiers),
-                        parsed.virtual_key,
-                    )
-                };
-                if result.is_ok() {
-                    registered.push((id, key.clone()));
-                }
+            unsafe {
+                HOTKEY_THREAD_ID.store(GetCurrentThreadId(), Ordering::Relaxed);
             }
 
-            if registered.is_empty() {
-                return;
-            }
+            let mut registered: Vec<(i32, String)> = Vec::new();
+
+            let apply = |registered: &mut Vec<(i32, String)>| {
+                for (id, _) in registered.drain(..) {
+                    unsafe {
+                        let _ = UnregisterHotKey(HWND(std::ptr::null_mut()), id);
+                    }
+                }
+                let map = HOTKEY_MAP.lock().unwrap().clone().unwrap_or_default();
+                for (key, accel) in map.iter() {
+                    // Ctrl is reserved for the click-through mode (Electron parity).
+                    if accel.to_ascii_uppercase().contains("CTRL") {
+                        continue;
+                    }
+                    let Some(parsed) = parse_accelerator(accel) else {
+                        continue;
+                    };
+                    let id = registered.len() as i32 + 1;
+                    let result = unsafe {
+                        RegisterHotKey(
+                            HWND(std::ptr::null_mut()),
+                            id,
+                            HOT_KEY_MODIFIERS(parsed.modifiers),
+                            parsed.virtual_key,
+                        )
+                    };
+                    if result.is_ok() {
+                        registered.push((id, key.clone()));
+                    }
+                }
+            };
+
+            apply(&mut registered);
 
             let mut message = MSG::default();
             loop {
-                let status = unsafe { GetMessageW(&mut message, HWND(std::ptr::null_mut()), 0, 0) };
+                let status = unsafe {
+                    GetMessageW(&mut message, HWND(std::ptr::null_mut()), 0, 0)
+                };
                 if status.0 <= 0 {
                     break;
                 }
@@ -605,12 +655,14 @@ pub fn spawn_hotkey_thread(
                     if let Some((_, key)) = registered.iter().find(|(rid, _)| *rid == id) {
                         emit(key.clone());
                     }
+                } else if message.message == WM_APP_RELOAD_HOTKEYS {
+                    apply(&mut registered);
                 }
             }
         }
         #[cfg(not(windows))]
         {
-            let _ = (shortcuts, emit);
+            let _ = emit;
         }
     });
 }

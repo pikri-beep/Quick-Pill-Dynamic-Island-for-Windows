@@ -6,7 +6,7 @@
  * `src-tauri/src/lib.rs` - there are no silent stubs left.
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 const isTauriEnv = () => {
@@ -70,6 +70,61 @@ const storage = {
   }
 };
 
+// Launch every enabled target of a workspace (Electron's
+// workspaceManager.launchWorkspace behaviour).
+async function launchWorkspaceById(workspaceId, options = {}) {
+  let list = [];
+  try {
+    list = JSON.parse(localStorage.getItem('qp_workspaces') || '[]');
+  } catch (_) {}
+  const workspace = list.find((w) => w.id === workspaceId);
+  if (!workspace) {
+    return {
+      success: false,
+      results: [{ id: workspaceId, success: false, error: 'Workspace not found' }],
+    };
+  }
+
+  let targets = Array.isArray(workspace.launchProfile) ? workspace.launchProfile : [];
+  if (Array.isArray(options?.targetIds) && options.targetIds.length > 0) {
+    targets = targets.filter((t) => options.targetIds.includes(t.id));
+  } else {
+    targets = targets.filter((t) => t.enabled !== false);
+  }
+
+  const results = [];
+  for (const item of targets) {
+    try {
+      if (item.type === 'url') {
+        await invoke('launcher_open_url', { url: item.target });
+      } else {
+        await invoke('launcher_open_app', { targetPath: item.target });
+      }
+      results.push({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        target: item.target,
+        success: true,
+      });
+    } catch (error) {
+      results.push({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        target: item.target,
+        success: false,
+        error: String(error),
+      });
+    }
+  }
+
+  return {
+    success: results.length > 0 ? results.some((r) => r.success) : true,
+    results,
+  };
+}
+
 // Safe recursive proxy to prevent any "undefined is not a function" crashes
 function createSafeProxy(target, path = '') {
   return new Proxy(target, {
@@ -123,7 +178,7 @@ export function initBridge() {
   const mascotFlag = makeFlag('mascotMode');
   const minimalFlag = makeFlag('minimalNotch');
   const privacyFlag = makeFlag('privacyDots');
-  const avoidanceFlag = makeFlag('smartBrowserAvoidance');
+  const avoidanceFlag = makeFlag('smartBrowserAvoidance', true);
   const hiddenTabsFlag = makeFlag('hiddenTabs', []);
   const tabOrderFlag = makeFlag('tabOrder', []);
 
@@ -131,6 +186,20 @@ export function initBridge() {
     platform: 'win32',
 
     getFilePath: (file) => file?.path || '',
+
+    /**
+     * Preview URL for a local file. WebView2 refuses `file:///` subresources
+     * from the app origin, so Tauri goes through the asset protocol instead.
+     */
+    getFileUrl: (filePath) => {
+      const raw = String(filePath || '');
+      if (!raw) return '';
+      try {
+        return convertFileSrc(raw);
+      } catch (_) {
+        return `file:///${raw.replace(/\\/g, '/')}`;
+      }
+    },
 
     settingsWindow: {
       minimize: () => invoke('minimize_settings_window').catch(() => {}),
@@ -155,10 +224,12 @@ export function initBridge() {
     onNotchCursorLeave: (cb) => createTauriListener('notch:cursor-leave', cb),
 
     /**
-     * The native 50ms hit-test loop owns the click-through state, so this is a
-     * no-op on purpose - calling it would lock the window transparent.
+     * Ctrl-hover click-through. The native window procedure answers
+     * WM_NCHITTEST with HTTRANSPARENT while this flag is set, so the notch
+     * keeps painting instead of becoming a layered (invisible) window.
      */
-    setIgnoreMouseEvents: () => Promise.resolve(true),
+    setIgnoreMouseEvents: (ignore, forward) =>
+      invoke('set_ignore_mouse_events', { ignore: Boolean(ignore), forward: forward !== false }).catch(() => false),
 
     getSystemMedia: () => invoke('get_system_media').catch(() => null),
 
@@ -180,20 +251,20 @@ export function initBridge() {
     searchApps: (query) => invoke('launcher_search_apps', { query: query || '' }).catch(() => []),
 
     getDisplays: () => invoke('get_displays').catch(() => [{ id: 'primary', bounds: { x: 0, y: 0, width: 1920, height: 1080 } }]),
-    setDisplay: () => Promise.resolve(true),
+    setDisplay: (displayId) => invoke('set_display', { displayId: String(displayId ?? '') }).catch(() => false),
     updateWindowPosition: (xPerc, yPx) => invoke('update_window_position', { xPerc: Number(xPerc), yPx: Number(yPx) }).catch(() => {}),
 
     setAutoLaunch: (enable) => invoke('set_auto_launch', { enable: Boolean(enable) }).catch(() => false),
     getAutoLaunch: () => invoke('get_auto_launch').catch(() => false),
-    createDesktopShortcut: () => Promise.resolve(true),
+    createDesktopShortcut: () => invoke('create_desktop_shortcut').catch((e) => ({ success: false, error: String(e) })),
     onAutoLaunchChange: (cb) => createTauriListener('settings:auto-launch-changed', cb),
 
     getClipboardText: () => invoke('get_clipboard_text').catch(() => ''),
     writeClipboardText: (text) => invoke('write_clipboard_text', { text }).catch(() => false),
     clearClipboard: () => invoke('clear_clipboard').catch(() => false),
 
-    controlSystemVolume: () => Promise.resolve(true),
-    focusWindow: () => Promise.resolve(true),
+    controlSystemVolume: (action) => invoke('control_system_volume', { action: action || 'up' }).catch(() => false),
+    focusWindow: () => invoke('focus_window').catch(() => false),
 
     logMessage: (level, msg, details) => {
       invoke('log_message', { level: level || 'info', msg: msg || '', details: details || null }).catch(() => {});
@@ -241,12 +312,13 @@ export function initBridge() {
     },
 
     progress: {
-      getSnapshot: () => Promise.resolve({ operations: [], history: [], compactDisplay: null }),
-      executeAction: () => Promise.resolve(true),
-      startFileOperation: () => Promise.resolve(true),
-      startHashOperation: () => Promise.resolve(true),
-      selectFile: () => Promise.resolve(null),
-      clearHistory: () => Promise.resolve(true),
+      getSnapshot: () => invoke('progress_get_snapshot').catch(() => ({ operations: [], history: [], compactDisplay: null })),
+      executeAction: (operationId, action, params) =>
+        invoke('progress_execute_action', { operationId, action, params: params || {} }).catch(() => false),
+      startFileOperation: (payload) => invoke('progress_start_file_operation', { payload: payload || {} }).catch(() => false),
+      startHashOperation: (payload) => invoke('progress_start_hash_operation', { payload: payload || {} }).catch(() => false),
+      selectFile: () => invoke('progress_select_file').catch(() => null),
+      clearHistory: () => invoke('progress_clear_history').catch(() => false),
       onUpdate: (cb) => createTauriListener('progress:update', cb)
     },
 
@@ -296,7 +368,7 @@ export function initBridge() {
         storage.set('qp_workspaces', list);
         return Promise.resolve(true);
       },
-      launchWorkspace: () => Promise.resolve(true),
+      launchWorkspace: (workspaceId, options) => launchWorkspaceById(workspaceId, options),
       onWindowActivated: (cb) => createTauriListener('launcher:window-activated', cb)
     },
 
@@ -314,14 +386,29 @@ export function initBridge() {
         storage.set('qp_workspaces', list);
         return Promise.resolve(true);
       },
-      launchWorkspace: () => Promise.resolve(true),
+      launchWorkspace: (workspaceId, options) => launchWorkspaceById(workspaceId, options),
     },
 
     notes: {
-      getNotes: (filter) => {
-        const notes = storage.get('qp_notes', []);
-        if (!filter) return Promise.resolve(notes);
-        return Promise.resolve(notes.filter(n => !n.archived));
+      getNotes: (filter, options) => {
+        let notes = storage.get('qp_notes', []);
+        const tag = options?.tag;
+        if (tag) {
+          notes = notes.filter((n) => Array.isArray(n.tags) && n.tags.includes(tag));
+        }
+        if (filter === 'archived') {
+          notes = notes.filter((n) => n.archived);
+        } else if (filter === 'pinned') {
+          notes = notes.filter((n) => n.pinned && !n.archived);
+        } else if (filter === 'recent') {
+          notes = notes
+            .filter((n) => !n.archived)
+            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+            .slice(0, 20);
+        } else {
+          notes = notes.filter((n) => !n.archived);
+        }
+        return Promise.resolve(notes);
       },
       saveNote: (note) => {
         const notes = storage.get('qp_notes', []);
@@ -333,24 +420,36 @@ export function initBridge() {
         return Promise.resolve(newNote);
       },
       deleteNote: (id) => {
-        const notes = storage.get('qp_notes', []).filter(n => n.id !== id);
-        storage.set('qp_notes', notes);
+        const notes = storage.get('qp_notes', []);
+        const victim = notes.find(n => n.id === id);
+        const rest = notes.filter(n => n.id !== id);
+        storage.set('qp_notes', rest);
+        // Keep the last deleted note so the Undo banner can restore it.
+        storage.set('qp_notes_undo', victim || null);
         return Promise.resolve(true);
       },
-      undoDelete: () => Promise.resolve(true),
+      undoDelete: () => {
+        const victim = storage.get('qp_notes_undo', null);
+        if (!victim) return Promise.resolve({ success: false });
+        const notes = storage.get('qp_notes', []);
+        notes.unshift(victim);
+        storage.set('qp_notes', notes);
+        try { localStorage.removeItem('qp_notes_undo'); } catch (_) {}
+        return Promise.resolve({ success: true, note: victim });
+      },
       togglePin: (id) => {
         const notes = storage.get('qp_notes', []);
         const note = notes.find(n => n.id === id);
         if (note) note.pinned = !note.pinned;
         storage.set('qp_notes', notes);
-        return Promise.resolve(note);
+        return Promise.resolve(note ? { success: true, isPinned: note.pinned, note } : { success: false });
       },
       toggleArchive: (id) => {
         const notes = storage.get('qp_notes', []);
         const note = notes.find(n => n.id === id);
         if (note) note.archived = !note.archived;
         storage.set('qp_notes', notes);
-        return Promise.resolve(note);
+        return Promise.resolve(note ? { success: true, isArchived: note.archived, note } : { success: false });
       },
       saveDraft: (draft) => {
         storage.set('qp_note_draft', draft);
@@ -361,13 +460,54 @@ export function initBridge() {
         localStorage.removeItem('qp_note_draft');
         return Promise.resolve(true);
       },
-      getContextualCapture: () => Promise.resolve(null),
+      getContextualCapture: async () => {
+        const text = await invoke('get_clipboard_text').catch(() => '');
+        if (!text || !text.trim()) return { success: false, content: '' };
+        return {
+          success: true,
+          content: text,
+          source: 'clipboard',
+          charCount: text.length,
+          byteCount: new TextEncoder().encode(text).length,
+        };
+      },
       searchNotes: (q) => {
         const notes = storage.get('qp_notes', []);
-        return Promise.resolve(notes.filter(n => (n.text || n.title || '').toLowerCase().includes((q || '').toLowerCase())));
+        return Promise.resolve(notes.filter(n => (n.text || n.content || n.title || '').toLowerCase().includes((q || '').toLowerCase())));
       },
-      getTags: () => Promise.resolve([]),
-      convertToTask: () => Promise.resolve(true),
+      getTags: () => {
+        const notes = storage.get('qp_notes', []);
+        const counts = new Map();
+        for (const note of notes) {
+          const tags = Array.isArray(note.tags) ? note.tags : [];
+          for (const tag of tags) {
+            if (typeof tag === 'string' && tag) {
+              counts.set(tag, (counts.get(tag) || 0) + 1);
+            }
+          }
+        }
+        return Promise.resolve([...counts.keys()].sort());
+      },
+      convertToTask: (note) => {
+        const raw = typeof note === 'string' ? '' : (note?.content || note?.text || note?.title || '');
+        const firstLine = String(raw).split(/\r?\n/).map(l => l.trim()).find(Boolean) || 'Untitled Task';
+        const cleaned = firstLine
+          .replace(/^>\s*/, '')
+          .replace(/^[-*+]\s+/, '')
+          .replace(/^\d+[.)]\s+/, '')
+          .replace(/^\[[ xX]\]\s*/, '')
+          .replace(/^#{1,6}\s*/, '')
+          .replace(/[*_`~]+/g, '')
+          .trim() || 'Untitled Task';
+        const title = cleaned.length > 60 ? `${cleaned.slice(0, 57).trim()}...` : cleaned;
+        return Promise.resolve({
+          id: Date.now(),
+          title,
+          completed: false,
+          noteId: note?.id || null,
+          createdAt: Date.now(),
+        });
+      },
       onQuickCaptureTriggered: (cb) => createTauriListener('notes:quick-capture-triggered', cb),
       onNotesUpdated: (cb) => createTauriListener('notes:updated', cb)
     },

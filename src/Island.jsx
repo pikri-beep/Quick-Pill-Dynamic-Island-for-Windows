@@ -6770,7 +6770,9 @@ export default function Island() {
                                 }}>
                                   {hasThumbnail ? (
                                     <img
-                                      src={`file:///${file.path.replace(/\\/g, '/')}`}
+                                      src={window.electronAPI?.getFileUrl
+                                        ? window.electronAPI.getFileUrl(file.path)
+                                        : `file:///${String(file.path).replace(/\\/g, '/')}`}
                                       alt=""
                                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                                       onError={(e) => { e.currentTarget.style.display = 'none'; }}
